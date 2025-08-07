@@ -99,3 +99,4 @@ st.download_button("📄 Baixar PDF", data=pdf_bytes, file_name="relatorio_filtr
 else:
     st.info("Envie uma planilha para começar.")
 
+
