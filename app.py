@@ -77,23 +77,25 @@ if uploaded_file:
 
         # PDF
         def gerar_pdf(dataframe):
-            pdf = FPDF()
-            pdf.set_auto_page_break(auto=True, margin=15)
-            pdf.add_page()
-            pdf.set_font("Arial", 'B', 14)
-            pdf.cell(200, 10, txt="Relatório de Débitos Filtrados", ln=True, align="C")
-            pdf.set_font("Arial", size=10)
-            pdf.ln(10)
-            for _, row in dataframe.iterrows():
-                linha = f"{row['DATA'].strftime('%d/%m/%Y')} | {row['FORNECEDOR']} | {row['CNPJ']} | R$ {row['VALOR']:,.2f} | {row['SECRETARIA']}"
-                pdf.multi_cell(0, 8, linha)
-            buffer = io.BytesIO()
-            pdf.output(buffer)
-            buffer.seek(0)
-            return buffer
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(200, 10, txt="Relatório de Débitos Filtrados", ln=True, align="C")
+    pdf.set_font("Arial", size=10)
+    pdf.ln(10)
+
+    if dataframe.empty:
+        pdf.multi_cell(0, 8, "Nenhum registro para os filtros selecionados.")
+    else:
+        for _, row in dataframe.iterrows():
+            data_txt = row['DATA'].strftime('%d/%m/%Y') if pd.notna(row['DATA']) else ''
+            linha = f"{data_txt} | {row['FORNECEDOR']} | {row.get('CNPJ','')} | R$ {row['VALOR']:,.2f} | {row['SECRETARIA']}"
+            pdf.multi_cell(0, 8, linha)
 
         pdf_bytes = gerar_pdf(df_filtrado)
-        st.download_button("📄 Baixar PDF", data=pdf_bytes, file_name="relatorio_filtrado.pdf", mime="application/pdf")
+st.download_button("📄 Baixar PDF", data=pdf_bytes, file_name="relatorio_filtrado.pdf", mime="application/pdf")
 
 else:
     st.info("Envie uma planilha para começar.")
+
