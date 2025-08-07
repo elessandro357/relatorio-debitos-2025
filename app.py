@@ -3,7 +3,6 @@ import pandas as pd
 import plotly.express as px
 from fpdf import FPDF
 import io
-from datetime import date
 
 # =========================================
 # Configuração do app
@@ -29,17 +28,38 @@ def load_excel(uploaded_file: io.BytesIO) -> pd.DataFrame:
     df.columns = df.columns.str.strip().str.upper()
     return df
 
-def validate_columns(df: pd.DataFrame) -> tuple[bool, list]:
+def validate_columns(df: pd.DataFrame):
     required = ["DATA", "FORNECEDOR", "CNPJ", "VALOR", "SECRETARIA"]
     missing = [c for c in required if c not in df.columns]
     return (len(missing) == 0, missing)
 
 def cast_types(df: pd.DataFrame) -> pd.DataFrame:
+    """Conversões robustas: DATA tenta padrão e dayfirst; VALOR aceita '1.234,56'."""
     df = df.copy()
-    df["DATA"] = pd.to_datetime(df["DATA"], errors="coerce")
-    df["VALOR"] = pd.to_numeric(df["VALOR"], errors="coerce")
-    df = df.dropna(subset=["DATA", "FORNECEDOR", "VALOR", "SECRETARIA"])
+
+    # DATA — tenta padrão; se falhar, tenta dayfirst=True
+    d1 = pd.to_datetime(df["DATA"], errors="coerce")
+    d2 = pd.to_datetime(df["DATA"], errors="coerce", dayfirst=True)
+    df["DATA"] = d1.fillna(d2)
+
+    # VALOR — tenta direto; se falhar, tenta parse BR (1.234,56)
+    v1 = pd.to_numeric(df["VALOR"], errors="coerce")
+    precisa_parse_brl = v1.isna() & df["VALOR"].astype(str).str.contains(r"[.,]", na=False)
+    v2 = pd.to_numeric(
+        df.loc[precisa_parse_brl, "VALOR"].astype(str).str.replace(".", "", regex=False).str.replace(",", ".", regex=False),
+        errors="coerce",
+    )
+    v1.loc[precisa_parse_brl] = v2
+    df["VALOR"] = v1
+
+    # Limpeza mínima de texto
+    df["FORNECEDOR"] = df["FORNECEDOR"].astype(str).str.strip()
+    df["SECRETARIA"] = df["SECRETARIA"].astype(str).str.strip()
+
+    # Remove só o que é realmente inviável
+    df = df.dropna(subset=["DATA", "VALOR", "FORNECEDOR", "SECRETARIA"]).copy()
     df["VALOR"] = df["VALOR"].round(2)
+
     return df
 
 def gerar_pdf(dataframe: pd.DataFrame) -> io.BytesIO:
@@ -108,6 +128,46 @@ if df.empty:
     st.stop()
 
 # =========================================
+# Diagnóstico: por que linhas foram ignoradas
+# =========================================
+with st.expander("🔎 Diagnóstico: linhas ignoradas na importação"):
+    raw = df_raw.copy()
+    raw.columns = raw.columns.str.strip().str.upper()
+
+    data_conv1 = pd.to_datetime(raw["DATA"], errors="coerce")
+    data_conv2 = pd.to_datetime(raw["DATA"], errors="coerce", dayfirst=True)
+    data_ok = data_conv1.notna() | data_conv2.notna()
+
+    valor_num = pd.to_numeric(raw["VALOR"], errors="coerce")
+    valor_brl_try = pd.to_numeric(
+        raw["VALOR"].astype(str).str.replace(".", "", regex=False).str.replace(",", ".", regex=False),
+        errors="coerce"
+    )
+    valor_ok = valor_num.notna() | valor_brl_try.notna()
+
+    fornecedor_ok = raw["FORNECEDOR"].astype(str).str.strip().ne("")
+    secretaria_ok = raw["SECRETARIA"].astype(str).str.strip().ne("")
+
+    problema = (~data_ok) | (~valor_ok) | (~fornecedor_ok) | (~secretaria_ok)
+    diag = raw.loc[problema, ["DATA","FORNECEDOR","CNPJ","VALOR","SECRETARIA"]].copy()
+
+    if not diag.empty:
+        # estimativa do número da linha no Excel (linha 1 = cabeçalho)
+        diag.insert(0, "LINHA_APROX_EXCEL", diag.index + 2)
+        diag["MOTIVO"] = (
+            (~data_ok).map({True:"DATA inválida", False:""}) + " " +
+            (~valor_ok).map({True:"VALOR inválido", False:""}) + " " +
+            (~fornecedor_ok).map({True:"FORNECEDOR vazio", False:""}) + " " +
+            (~secretaria_ok).map({True:"SECRETARIA vazia", False:""})
+        ).str.strip()
+        st.warning("Algumas linhas foram ignoradas por problemas de dados:")
+        st.dataframe(diag, use_container_width=True)
+    else:
+        st.info("Nenhuma linha foi ignorada por problemas de dados.")
+
+st.divider()
+
+# =========================================
 # Filtros (barra lateral)
 # =========================================
 st.sidebar.header("🔎 Filtros")
@@ -174,7 +234,7 @@ with col_g1:
             text=[format_brl(v) for v in graf1["VALOR"]],
             color="SECRETARIA",
         )
-        # Hover em BRL
+        # Hover numérico com separador padrão; o texto já está em BRL
         fig1.update_traces(hovertemplate="<b>%{y}</b><br>Valor: %{x:,.2f}")
         fig1.update_layout(showlegend=False, margin=dict(l=10, r=10, t=30, b=10))
         st.plotly_chart(fig1, use_container_width=True)
