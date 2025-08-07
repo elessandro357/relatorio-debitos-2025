@@ -5,16 +5,23 @@ from fpdf import FPDF
 import io
 from datetime import date
 
-# =========================
+# =========================================
 # Configuração do app
-# =========================
+# =========================================
 st.set_page_config(layout="wide", page_title="Dashboard de Débitos 2025")
 st.title("📊 Dashboard Interativo de Débitos por Secretaria - 2025")
 st.caption("Envie a planilha e use os filtros para explorar os dados. Downloads respeitam os filtros aplicados.")
 
-# =========================
-# Funções auxiliares
-# =========================
+# =========================================
+# Utilidades
+# =========================================
+def format_brl(valor):
+    """Formata número como Real brasileiro (R$ 1.234,56) sem depender de locale do SO."""
+    try:
+        return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except Exception:
+        return valor
+
 @st.cache_data(show_spinner=False)
 def load_excel(uploaded_file: io.BytesIO) -> pd.DataFrame:
     df = pd.read_excel(uploaded_file)
@@ -56,7 +63,8 @@ def gerar_pdf(dataframe: pd.DataFrame) -> io.BytesIO:
         for _, row in dataframe.iterrows():
             data_txt = row["DATA"].strftime("%d/%m/%Y") if pd.notna(row["DATA"]) else ""
             cnpj_txt = "" if pd.isna(row.get("CNPJ", "")) else str(row.get("CNPJ", ""))
-            linha = f"{data_txt} | {row['FORNECEDOR']} | {cnpj_txt} | R$ {row['VALOR']:,.2f} | {row['SECRETARIA']}"
+            valor_txt = format_brl(row["VALOR"])
+            linha = f"{data_txt} | {row['FORNECEDOR']} | {cnpj_txt} | {valor_txt} | {row['SECRETARIA']}"
             pdf.multi_cell(0, 7, linha)
 
     # Converte PDF em bytes (compatível com Streamlit Cloud)
@@ -67,9 +75,9 @@ def filtro_multiselect_opcoes(label: str, serie: pd.Series):
     opcoes = sorted(serie.dropna().unique().tolist())
     return st.sidebar.multiselect(label, opcoes)
 
-# =========================
+# =========================================
 # Upload do arquivo
-# =========================
+# =========================================
 uploaded_file = st.file_uploader(
     "📁 Envie a planilha Excel (colunas necessárias: DATA, FORNECEDOR, CNPJ, VALOR, SECRETARIA)",
     type=["xlsx"],
@@ -79,9 +87,9 @@ if not uploaded_file:
     st.info("Envie uma planilha para começar.")
     st.stop()
 
-# =========================
+# =========================================
 # Leitura e validação
-# =========================
+# =========================================
 try:
     df_raw = load_excel(uploaded_file)
 except Exception as e:
@@ -99,9 +107,9 @@ if df.empty:
     st.warning("A planilha foi carregada, mas não há linhas válidas após conversão de tipos. Revise os dados.")
     st.stop()
 
-# =========================
+# =========================================
 # Filtros (barra lateral)
-# =========================
+# =========================================
 st.sidebar.header("🔎 Filtros")
 
 secretarias_sel = filtro_multiselect_opcoes("Secretaria", df["SECRETARIA"])
@@ -133,23 +141,23 @@ if secretarias_sel:
 if fornecedores_sel:
     df_filtrado = df_filtrado[df_filtrado["FORNECEDOR"].isin(fornecedores_sel)]
 
-# =========================
+# =========================================
 # KPIs
-# =========================
+# =========================================
 col_k1, col_k2, col_k3 = st.columns(3)
 total_valor = df_filtrado["VALOR"].sum() if not df_filtrado.empty else 0.0
 qtd_linhas = len(df_filtrado)
 qtd_fornec = df_filtrado["FORNECEDOR"].nunique()
 
-col_k1.metric("Valor total filtrado", f"R$ {total_valor:,.2f}")
+col_k1.metric("Valor total filtrado", format_brl(total_valor))
 col_k2.metric("Registros", f"{qtd_linhas}")
 col_k3.metric("Fornecedores", f"{qtd_fornec}")
 
 st.divider()
 
-# =========================
+# =========================================
 # Gráficos (Plotly)
-# =========================
+# =========================================
 col_g1, col_g2 = st.columns(2)
 
 with col_g1:
@@ -163,10 +171,11 @@ with col_g1:
             x="VALOR",
             y="SECRETARIA",
             orientation="h",
-            text="VALOR",
+            text=[format_brl(v) for v in graf1["VALOR"]],
             color="SECRETARIA",
         )
-        fig1.update_traces(texttemplate="R$ %{text:,.2f}", textposition="outside")
+        # Hover em BRL
+        fig1.update_traces(hovertemplate="<b>%{y}</b><br>Valor: %{x:,.2f}")
         fig1.update_layout(showlegend=False, margin=dict(l=10, r=10, t=30, b=10))
         st.plotly_chart(fig1, use_container_width=True)
 
@@ -185,27 +194,29 @@ with col_g2:
             graf2,
             x="FORNECEDOR",
             y="VALOR",
-            text="VALOR",
+            text=[format_brl(v) for v in graf2["VALOR"]],
             color="FORNECEDOR",
         )
-        fig2.update_traces(texttemplate="R$ %{text:,.2f}", textposition="outside")
+        fig2.update_traces(hovertemplate="<b>%{x}</b><br>Valor: %{y:,.2f}")
         fig2.update_layout(showlegend=False, xaxis_tickangle=45, margin=dict(l=10, r=10, t=30, b=80))
         st.plotly_chart(fig2, use_container_width=True)
 
 st.divider()
 
-# =========================
-# Tabela
-# =========================
+# =========================================
+# Tabela (formatação BRL apenas para exibição)
+# =========================================
 st.subheader("📋 Dados Filtrados")
-st.dataframe(df_filtrado, use_container_width=True)
+df_display = df_filtrado.copy()
+df_display["VALOR"] = df_display["VALOR"].apply(format_brl)
+st.dataframe(df_display, use_container_width=True)
 
-# =========================
+# =========================================
 # Downloads (respeitam os filtros)
-# =========================
+# =========================================
 st.subheader("📥 Exportar")
 
-# Excel
+# Excel (mantém numérico para permitir somas)
 excel_buffer = io.BytesIO()
 df_filtrado.to_excel(excel_buffer, index=False)
 excel_buffer.seek(0)
@@ -216,7 +227,7 @@ st.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
-# PDF
+# PDF (com BRL)
 pdf_bytes = gerar_pdf(df_filtrado)
 st.download_button(
     "📄 Baixar PDF",
