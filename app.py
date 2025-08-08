@@ -153,7 +153,9 @@ def gerar_pdf_listagem(df: pd.DataFrame, titulo="Relatório"):
             pdf.multi_cell(w, 6, txt, border=0, new_x="RIGHT", new_y="TOP")
         pdf.multi_cell(0, 2, "", border=0, new_x="LMARGIN", new_y="NEXT")
 
-    return io.BytesIO(pdf.output(dest="S").encode("latin-1"))
+    out = pdf.output(dest="S")
+    pdf_bytes = out if isinstance(out, (bytes, bytearray)) else out.encode("latin-1", "ignore")
+    return io.BytesIO(pdf_bytes)
 
 # ========= Abas =========
 tab_dash, tab_plano = st.tabs(["📈 Dashboard", "💸 Plano de Pagamento"])
@@ -309,3 +311,4 @@ with tab_plano:
         pdf2 = gerar_pdf_listagem(pdf2_df, "Plano de Pagamento - Rateio Proporcional (Recurso Livre)")
         st.download_button("📄 Baixar PDF do Plano", data=pdf2,
                            file_name="plano_pagamento_rateio.pdf", mime="application/pdf")
+
