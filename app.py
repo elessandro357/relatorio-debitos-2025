@@ -12,11 +12,6 @@ st.title("📊 Débitos por Secretaria + 💸 Plano de Pagamento (Recurso Livre)
 st.caption("Use as abas abaixo. Exporte Excel/PDF. Rateio: quem devo mais, recebe mais (sem pagar acima do devido).")
 
 # ========= Utilidades =========
-def _pdf_to_bytesio(pdf_obj):
-    """Compatibiliza fpdf2 que retorna str OU bytes em output(dest='S')."""
-    out = pdf_obj.output(dest="S")
-    pdf_bytes = out if isinstance(out, (bytes, bytearray)) else out.encode("latin-1", "ignore")
-    return io.BytesIO(pdf_bytes)
 def format_brl(v):
     """Formata número como Real brasileiro (R$ 1.234,56) sem depender de locale."""
     try:
@@ -96,6 +91,12 @@ def proportional_allocation(total, debitos_series: pd.Series) -> pd.Series:
     return pago.round(2)
 
 # ========= PDF seguro (em colunas) =========
+def _pdf_to_bytesio(pdf_obj):
+    """Compatibiliza fpdf2 quando output(dest='S') retorna str OU bytes."""
+    out = pdf_obj.output(dest="S")
+    pdf_bytes = out if isinstance(out, (bytes, bytearray)) else out.encode("latin-1", "ignore")
+    return io.BytesIO(pdf_bytes)
+
 def _chunk_long_words(text, maxlen=30):
     """Insere quebras em palavras muito longas para evitar erro do FPDF."""
     s = "" if pd.isna(text) else str(text)
@@ -118,7 +119,7 @@ def gerar_pdf_listagem(df: pd.DataFrame, titulo="Relatório"):
     if df.empty:
         pdf.set_font("Arial", size=10)
         pdf.multi_cell(0, 7, "Nenhum registro.")
-        return io.BytesIO(pdf.output(dest="S").encode("latin-1"))
+        return _pdf_to_bytesio(pdf)
 
     # Fonte base
     pdf.set_font("Arial", size=10)
@@ -151,15 +152,12 @@ def gerar_pdf_listagem(df: pd.DataFrame, titulo="Relatório"):
     for _, row in df.iterrows():
         for c, w in zip(cols, widths):
             txt = row[c]
-            # Se a coluna é de valor (numérico), formata BRL
             if isinstance(txt, (int, float)) and c.upper().startswith("VALOR"):
                 txt = format_brl(txt)
             txt = _chunk_long_words(txt, 30)
             pdf.multi_cell(w, 6, txt, border=0, new_x="RIGHT", new_y="TOP")
         pdf.multi_cell(0, 2, "", border=0, new_x="LMARGIN", new_y="NEXT")
 
-    out = pdf.output(dest="S")
-    pdf_bytes = out if isinstance(out, (bytes, bytearray)) else out.encode("latin-1", "ignore")
     return _pdf_to_bytesio(pdf)
 
 # ========= Abas =========
@@ -316,5 +314,3 @@ with tab_plano:
         pdf2 = gerar_pdf_listagem(pdf2_df, "Plano de Pagamento - Rateio Proporcional (Recurso Livre)")
         st.download_button("📄 Baixar PDF do Plano", data=pdf2,
                            file_name="plano_pagamento_rateio.pdf", mime="application/pdf")
-
-
