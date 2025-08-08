@@ -4,15 +4,19 @@ import plotly.express as px
 from fpdf import FPDF
 import io
 
+# =========================================
+# Configuração do app
+# =========================================
 st.set_page_config(layout="wide", page_title="Débitos & Plano de Pagamento 2025")
 st.title("📊 Débitos por Secretaria + 💸 Plano de Pagamento (Recurso Livre)")
 st.caption("Use as abas abaixo. Exporte Excel/PDF. Rateio: quem devo mais, recebe mais (sem pagar acima do devido).")
 
 # ========= Utilidades =========
 def format_brl(v):
+    """Formata número como Real brasileiro (R$ 1.234,56) sem depender de locale."""
     try:
         return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except:
+    except Exception:
         return v
 
 @st.cache_data(show_spinner=False)
@@ -22,11 +26,15 @@ def load_excel(f) -> pd.DataFrame:
     return df
 
 def cast_types_debitos(df: pd.DataFrame) -> pd.DataFrame:
+    """Conversões robustas: DATA tenta padrão e dayfirst; VALOR aceita 1.234,56."""
     df = df.copy()
+
+    # DATA
     d1 = pd.to_datetime(df["DATA"], errors="coerce")
     d2 = pd.to_datetime(df["DATA"], errors="coerce", dayfirst=True)
     df["DATA"] = d1.fillna(d2)
 
+    # VALOR
     v1 = pd.to_numeric(df["VALOR"], errors="coerce")
     precisa_brl = v1.isna() & df["VALOR"].astype(str).str.contains(r"[.,]", na=False)
     v2 = pd.to_numeric(
@@ -36,8 +44,11 @@ def cast_types_debitos(df: pd.DataFrame) -> pd.DataFrame:
     v1.loc[precisa_brl] = v2
     df["VALOR"] = v1
 
+    # Texto
     df["FORNECEDOR"] = df["FORNECEDOR"].astype(str).str.strip()
     df["SECRETARIA"] = df["SECRETARIA"].astype(str).str.strip()
+
+    # Limpeza final
     df = df.dropna(subset=["DATA", "VALOR", "FORNECEDOR", "SECRETARIA"]).copy()
     df["VALOR"] = df["VALOR"].round(2)
     return df
@@ -52,41 +63,97 @@ def validar_saldos_cols(df):
     miss = [c for c in req if c not in df.columns]
     return len(miss)==0, miss
 
-def gerar_pdf_listagem(df, titulo):
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
-    pdf.set_font("Arial", 'B', 14)
-    pdf.cell(200, 10, txt=titulo, ln=True, align="C")
-    pdf.set_font("Arial", size=10)
-    pdf.ln(8)
-    if df.empty:
-        pdf.multi_cell(0, 8, "Nenhum registro.")
-    else:
-        pdf.set_font("Arial", 'B', 10)
-        pdf.multi_cell(0, 7, " | ".join(df.columns))
-        pdf.set_font("Arial", size=10)
-        pdf.ln(2)
-        for _, r in df.iterrows():
-            pdf.multi_cell(0, 7, " | ".join(str(r[c]) for c in df.columns))
-    return io.BytesIO(pdf.output(dest="S").encode("latin-1"))
-
 def proportional_allocation(total, debitos_series: pd.Series) -> pd.Series:
+    """
+    Rateio proporcional limitado ao valor devido:
+    1) Aloca proporcionalmente ao total; 2) Trunca pelo teto (dívida);
+    3) Redistribui sobras até esgotar (ou bater no teto).
+    """
     if total <= 0 or debitos_series.sum() == 0:
         return pd.Series(0.0, index=debitos_series.index)
+
     base = total * (debitos_series / debitos_series.sum())
     pago = base.clip(upper=debitos_series)
     sobra = total - pago.sum()
+
     for _ in range(10):
-        if sobra <= 0.0001: break
+        if sobra <= 0.0001:
+            break
         restantes = debitos_series - pago
         elegiveis = restantes[restantes > 0]
-        if elegiveis.empty: break
+        if elegiveis.empty:
+            break
         add = sobra * (elegiveis / elegiveis.sum())
         novo = pago.add(add, fill_value=0)
         pago = pd.concat([novo, debitos_series], axis=1).min(axis=1)
         sobra = total - pago.sum()
+
     return pago.round(2)
+
+# ========= PDF seguro (em colunas) =========
+def _chunk_long_words(text, maxlen=30):
+    """Insere quebras em palavras muito longas para evitar erro do FPDF."""
+    s = "" if pd.isna(text) else str(text)
+    partes = []
+    for w in s.split():
+        if len(w) > maxlen:
+            partes.extend([w[i:i+maxlen] for i in range(0, len(w), maxlen)])
+        else:
+            partes.append(w)
+    return " ".join(partes)
+
+def gerar_pdf_listagem(df: pd.DataFrame, titulo="Relatório"):
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(0, 10, txt=titulo, ln=True, align="C")
+    pdf.ln(2)
+
+    if df.empty:
+        pdf.set_font("Arial", size=10)
+        pdf.multi_cell(0, 7, "Nenhum registro.")
+        return io.BytesIO(pdf.output(dest="S").encode("latin-1"))
+
+    # Fonte base
+    pdf.set_font("Arial", size=10)
+
+    # Colunas + larguras
+    cols = list(df.columns)
+    epw = pdf.w - 2 * pdf.l_margin  # effective page width
+
+    # Layout amigável para conjunto clássico
+    if set(["DATA","FORNECEDOR","CNPJ","VALOR","SECRETARIA"]).issubset(set(cols)):
+        order = ["DATA","FORNECEDOR","CNPJ","VALOR","SECRETARIA"]
+        cols = [c for c in order if c in cols]
+        w_data = 22
+        w_forn = 70
+        w_cnpj = 35
+        w_val  = 28
+        w_sec  = max(epw - (w_data + w_forn + w_cnpj + w_val), 30)
+        widths = [w_data, w_forn, w_cnpj, w_val, w_sec]
+    else:
+        widths = [epw / len(cols)] * len(cols)
+
+    # Cabeçalho
+    pdf.set_font("Arial", 'B', 10)
+    for c, w in zip(cols, widths):
+        pdf.multi_cell(w, 7, _chunk_long_words(c, 20), border=0, new_x="RIGHT", new_y="TOP")
+    pdf.multi_cell(0, 2, "", border=0, new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Arial", size=10)
+
+    # Linhas
+    for _, row in df.iterrows():
+        for c, w in zip(cols, widths):
+            txt = row[c]
+            # Se a coluna é de valor (numérico), formata BRL
+            if isinstance(txt, (int, float)) and c.upper().startswith("VALOR"):
+                txt = format_brl(txt)
+            txt = _chunk_long_words(txt, 30)
+            pdf.multi_cell(w, 6, txt, border=0, new_x="RIGHT", new_y="TOP")
+        pdf.multi_cell(0, 2, "", border=0, new_x="LMARGIN", new_y="NEXT")
+
+    return io.BytesIO(pdf.output(dest="S").encode("latin-1"))
 
 # ========= Abas =========
 tab_dash, tab_plano = st.tabs(["📈 Dashboard", "💸 Plano de Pagamento"])
@@ -130,7 +197,8 @@ with tab_dash:
         g1c,g2c = st.columns(2)
         with g1c:
             st.subheader("Débitos por Secretaria")
-            if df_f.empty: st.info("Sem dados."); 
+            if df_f.empty:
+                st.info("Sem dados.")
             else:
                 g1 = df_f.groupby("SECRETARIA", as_index=False)["VALOR"].sum().sort_values("VALOR")
                 fig1 = px.bar(g1, x="VALOR", y="SECRETARIA", orientation="h",
@@ -140,7 +208,8 @@ with tab_dash:
                 st.plotly_chart(fig1, use_container_width=True)
         with g2c:
             st.subheader("Top 10 Fornecedores")
-            if df_f.empty: st.info("Sem dados."); 
+            if df_f.empty:
+                st.info("Sem dados.")
             else:
                 g2 = df_f.groupby("FORNECEDOR", as_index=False)["VALOR"].sum().sort_values("VALOR", ascending=False).head(10)
                 fig2 = px.bar(g2, x="FORNECEDOR", y="VALOR",
@@ -160,7 +229,9 @@ with tab_dash:
         st.download_button("📊 Baixar Excel (dados filtrados)", data=xbuf,
                            file_name="dashboard_dados_filtrados.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        pdf = gerar_pdf_listagem(df_disp.rename(columns={"VALOR":"VALOR (BRL)"}), "Débitos - Dados Filtrados (Dashboard)")
+        # PDF em colunas (valor já formatado)
+        pdf_df = df_disp.rename(columns={"VALOR":"VALOR (BRL)"})
+        pdf = gerar_pdf_listagem(pdf_df, "Débitos - Dados Filtrados (Dashboard)")
         st.download_button("📄 Baixar PDF (dados filtrados)", data=pdf,
                            file_name="dashboard_dados_filtrados.pdf", mime="application/pdf")
 
@@ -233,9 +304,8 @@ with tab_plano:
                            file_name="plano_pagamento_rateio.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-        pdf2 = gerar_pdf_listagem(
-            plano_disp[["FORNECEDOR","CNPJ","DEBITO","PAGAR_AGORA","RESTANTE"]],
-            "Plano de Pagamento - Rateio Proporcional (Recurso Livre)"
-        )
+        # PDF do plano (em colunas)
+        pdf2_df = plano_disp[["FORNECEDOR","CNPJ","DEBITO","PAGAR_AGORA","RESTANTE"]].copy()
+        pdf2 = gerar_pdf_listagem(pdf2_df, "Plano de Pagamento - Rateio Proporcional (Recurso Livre)")
         st.download_button("📄 Baixar PDF do Plano", data=pdf2,
                            file_name="plano_pagamento_rateio.pdf", mime="application/pdf")
