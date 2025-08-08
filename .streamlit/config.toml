@@ -1,9 +1,6 @@
-[server]
-headless = true
-
 [theme]
-primaryColor="#0E1117"
-backgroundColor="#FFFFFF"
-secondaryBackgroundColor="#F0F2F6"
-textColor="#000000"
-font="sans serif"
+primaryColor = "#2563EB"          # Azul principal
+backgroundColor = "#FFFFFF"       # Fundo branco
+secondaryBackgroundColor = "#F3F4F6"  # Cinza claro para painéis
+textColor = "#1F2937"             # Texto cinza-escuro
+font = "sans serif"                # Fonte limpa
