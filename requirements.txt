@@ -4,3 +4,4 @@ plotly
 matplotlib
 fpdf
 openpyxl
+fpdf2
