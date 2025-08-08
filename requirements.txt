@@ -3,4 +3,4 @@ pandas
 plotly
 matplotlib
 openpyxl
-fpdf2
+fpdf2==2.7.9
