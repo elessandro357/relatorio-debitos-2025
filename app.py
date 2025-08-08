@@ -12,6 +12,11 @@ st.title("📊 Débitos por Secretaria + 💸 Plano de Pagamento (Recurso Livre)
 st.caption("Use as abas abaixo. Exporte Excel/PDF. Rateio: quem devo mais, recebe mais (sem pagar acima do devido).")
 
 # ========= Utilidades =========
+def _pdf_to_bytesio(pdf_obj):
+    """Compatibiliza fpdf2 que retorna str OU bytes em output(dest='S')."""
+    out = pdf_obj.output(dest="S")
+    pdf_bytes = out if isinstance(out, (bytes, bytearray)) else out.encode("latin-1", "ignore")
+    return io.BytesIO(pdf_bytes)
 def format_brl(v):
     """Formata número como Real brasileiro (R$ 1.234,56) sem depender de locale."""
     try:
@@ -155,7 +160,7 @@ def gerar_pdf_listagem(df: pd.DataFrame, titulo="Relatório"):
 
     out = pdf.output(dest="S")
     pdf_bytes = out if isinstance(out, (bytes, bytearray)) else out.encode("latin-1", "ignore")
-    return io.BytesIO(pdf_bytes)
+    return _pdf_to_bytesio(pdf)
 
 # ========= Abas =========
 tab_dash, tab_plano = st.tabs(["📈 Dashboard", "💸 Plano de Pagamento"])
@@ -311,4 +316,5 @@ with tab_plano:
         pdf2 = gerar_pdf_listagem(pdf2_df, "Plano de Pagamento - Rateio Proporcional (Recurso Livre)")
         st.download_button("📄 Baixar PDF do Plano", data=pdf2,
                            file_name="plano_pagamento_rateio.pdf", mime="application/pdf")
+
 
