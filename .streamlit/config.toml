@@ -1,6 +1,15 @@
 [theme]
-primaryColor = "#2563EB"          # Azul principal
-backgroundColor = "#FFFFFF"       # Fundo branco
-secondaryBackgroundColor = "#F3F4F6"  # Cinza claro para painéis
-textColor = "#1F2937"             # Texto cinza-escuro
-font = "sans serif"                # Fonte limpa
+base="light"
+primaryColor="#0d6efd"
+backgroundColor="#ffffff"
+secondaryBackgroundColor="#f8f9fa"
+textColor="#000000"
+font="sans serif"
+
+[theme]
+base="dark"
+primaryColor="#0d6efd"
+backgroundColor="#0e1117"
+secondaryBackgroundColor="#262730"
+textColor="#fafafa"
+font="sans serif"
