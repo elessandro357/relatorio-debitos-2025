@@ -7,7 +7,7 @@ import io
 # ================================
 # Config geral
 # ================================
-st.set_page_config(layout="wide", page_title="Débitos • Saldos • Plano 2025")
+st.set_page_config(layout="wide", page_title="Débitos • Saldos")
 st.title("📊 Débitos • 🏦 Saldos")
 st.caption("Dashboards por abas + plano de pagamento proporcional por secretaria. Exporta Excel/PDF.")
 
@@ -336,4 +336,5 @@ with tab_saldos:
         st.download_button("📄 PDF - Detalhe por Fornecedor",
                            data=gerar_pdf_listagem(pdf_p, "Plano - Detalhe por Fornecedor"),
                            file_name="plano_detalhe_fornecedor.pdf", mime="application/pdf")
+
 
