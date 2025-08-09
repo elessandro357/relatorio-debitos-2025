@@ -8,7 +8,7 @@ import io
 # Config geral
 # ================================
 st.set_page_config(layout="wide", page_title="Débitos • Saldos • Plano 2025")
-st.title("📊 Débitos • 🏦 Saldos • 💸 Plano de Pagamento (2025)")
+st.title("📊 Débitos • 🏦 Saldos")
 st.caption("Dashboards por abas + plano de pagamento proporcional por secretaria. Exporta Excel/PDF.")
 
 # ================================
@@ -319,64 +319,6 @@ with tab_saldos:
         st.download_button("📄 PDF (saldos filtrados)", data=pdf2,
                            file_name="saldos_filtrados.pdf", mime="application/pdf")
 
-# --------- Aba Plano ---------
-with tab_plano:
-    st.subheader("💸 Plano de Pagamento por Secretaria (Recurso LIVRE)")
-    c_up1, c_up2 = st.columns(2)
-    with c_up1:
-        up_deb2 = st.file_uploader("📁 Débitos (DATA, FORNECEDOR, CNPJ, VALOR, SECRETARIA)", type=["xlsx"], key="deb_plano2")
-    with c_up2:
-        up_sal2 = st.file_uploader("🏦 Saldos (CONTA, NOME DA CONTA, SECRETARIA, BANCO, TIPO DE RECURSO, SALDO BANCARIO)", type=["xlsx"], key="saldo_plano2")
-
-    apenas_livre_plano = st.checkbox("Considerar apenas Recurso LIVRE (saldos)", value=True)
-
-    if (up_deb2 is None) or (up_sal2 is None):
-        st.info("Envie as duas planilhas para calcular o plano.")
-    else:
-        deb_raw = load_excel(up_deb2)
-        okd, missd = validar_debitos_cols(deb_raw)
-        if not okd:
-            st.error(f"Débitos inválidos. Faltam: {', '.join(missd)}"); st.stop()
-        deb = cast_types_debitos(deb_raw)
-
-        sal_raw = load_excel(up_sal2)
-        oks, misss = validar_saldos_cols(sal_raw)
-        if not oks:
-            st.error(f"Saldos inválidos. Faltam: {', '.join(misss)}"); st.stop()
-        sal = preparar_saldos(sal_raw, apenas_livre=apenas_livre_plano)
-
-        quadro_sec, plano_for = plano_por_secretaria(deb, sal)
-
-        # KPIs
-        k1,k2,k3 = st.columns(3)
-        k1.metric("Saldo livre considerado", format_brl(quadro_sec["SALDO_LIVRE"].sum()))
-        k2.metric("Pagamento previsto (total)", format_brl(quadro_sec["PAGAMENTO_PREVISTO"].sum()))
-        k3.metric("Restante após pagamento", format_brl(quadro_sec["RESTANTE"].sum()))
-
-        st.divider()
-        st.subheader("📋 Resumo por Secretaria")
-        qdisp = quadro_sec.copy()
-        for c in ["TOTAL_DEBITO","SALDO_LIVRE","PAGAMENTO_PREVISTO","RESTANTE"]:
-            qdisp[c] = qdisp[c].apply(format_brl)
-        st.dataframe(qdisp, use_container_width=True)
-
-        st.subheader("📋 Detalhe por Fornecedor (rateio dentro da secretaria)")
-        pdisp = plano_for.copy()
-        for c in ["DEBITO_FORNECEDOR","PAGAR_AGORA","RESTANTE"]:
-            pdisp[c] = pdisp[c].apply(format_brl)
-        st.dataframe(pdisp[["SECRETARIA","FORNECEDOR","CNPJ","DEBITO_FORNECEDOR","PAGAR_AGORA","RESTANTE"]],
-                     use_container_width=True)
-
-        st.subheader("📥 Exportar (Plano)")
-        b1 = io.BytesIO(); quadro_sec.to_excel(b1, index=False); b1.seek(0)
-        st.download_button("📊 Excel - Resumo por Secretaria", data=b1,
-                           file_name="plano_resumo_secretaria.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        b2 = io.BytesIO(); plano_for.to_excel(b2, index=False); b2.seek(0)
-        st.download_button("📊 Excel - Detalhe por Fornecedor", data=b2,
-                           file_name="plano_detalhe_fornecedor.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
         # PDFs
         pdf_q = qdisp.rename(columns={
             "TOTAL_DEBITO":"TOTAL DEBITO (BRL)", "SALDO_LIVRE":"SALDO LIVRE (BRL)",
@@ -394,3 +336,4 @@ with tab_plano:
         st.download_button("📄 PDF - Detalhe por Fornecedor",
                            data=gerar_pdf_listagem(pdf_p, "Plano - Detalhe por Fornecedor"),
                            file_name="plano_detalhe_fornecedor.pdf", mime="application/pdf")
+
