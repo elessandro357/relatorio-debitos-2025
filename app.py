@@ -1,23 +1,22 @@
-# app.py — Débitos e Saldos (versão estável)
+# app.py — Débitos e Saldos (sem Plotly, não trava no Cloud)
 # --------------------------------------------------------------
 # • Abas: Débitos e Saldos
 # • Upload de planilhas (CSV/XLS/XLSX)
 # • Mapeador de colunas quando cabeçalhos diferem
 # • Filtros na sidebar + KPIs
-# • Gráficos interativos (Plotly) — sem exportar imagem
+# • Gráficos nativos do Streamlit (bar_chart / line_chart)
 # • Exportação: Excel (com Resumo) e PDF tabelado
 # --------------------------------------------------------------
 
 import io
 import pandas as pd
 import streamlit as st
-import plotly.express as px
 from fpdf import FPDF
 
 # ----------------------- Config -----------------------
 st.set_page_config(layout="wide", page_title="Débitos e Saldos — Painel")
-st.title("📊 Débitos • 🏦 Saldos — Painel")
-st.caption("Upload de planilhas, filtros, KPIs, gráficos e exportações (Excel/PDF).")
+st.title("📊 Débitos • 🏦 Saldos — Painel (sem Plotly)")
+st.caption("Upload, filtros, KPIs, gráficos nativos e exportações (Excel/PDF).")
 
 # --------------------- Utilidades ---------------------
 BRL_EXCEL_FMT = u'[$R$-416] #,##0.00'
@@ -32,7 +31,6 @@ def format_brl(v):
 def load_table(uploaded_file) -> pd.DataFrame:
     name = uploaded_file.name.lower()
     if name.endswith(".csv"):
-        # rápido e robusto para CSV
         try:
             df = pd.read_csv(uploaded_file)
         except Exception:
@@ -238,12 +236,10 @@ with tab_deb:
             if df_f.empty:
                 st.info("Sem dados.")
             else:
-                g1 = df_f.groupby("SECRETARIA", as_index=False)["VALOR"].sum().sort_values("VALOR")
-                fig1 = px.bar(g1, x="VALOR", y="SECRETARIA", orientation="h",
-                              text=[format_brl(v) for v in g1["VALOR"]], color="SECRETARIA")
-                fig1.update_traces(hovertemplate="<b>%{y}</b><br>Valor: %{x:,.2f}")
-                fig1.update_layout(showlegend=False, margin=dict(l=10,r=10,t=30,b=10))
-                st.plotly_chart(fig1, use_container_width=True)
+                g1 = (df_f.groupby("SECRETARIA", as_index=False)["VALOR"].sum()
+                      .sort_values("VALOR"))
+                g1 = g1.set_index("SECRETARIA")["VALOR"]
+                st.bar_chart(g1)
 
         with g2c:
             st.subheader("Top 10 Fornecedores")
@@ -252,11 +248,18 @@ with tab_deb:
             else:
                 g2 = (df_f.groupby("FORNECEDOR", as_index=False)["VALOR"]
                       .sum().sort_values("VALOR", ascending=False).head(10))
-                fig2 = px.bar(g2, x="FORNECEDOR", y="VALOR",
-                              text=[format_brl(v) for v in g2["VALOR"]], color="FORNECEDOR")
-                fig2.update_traces(hovertemplate="<b>%{x}</b><br>Valor: %{y:,.2f}")
-                fig2.update_layout(showlegend=False, xaxis_tickangle=45, margin=dict(l=10,r=10,t=30,b=80))
-                st.plotly_chart(fig2, use_container_width=True)
+                g2 = g2.set_index("FORNECEDOR")["VALOR"]
+                st.bar_chart(g2)
+
+        st.divider()
+        st.subheader("📈 Série Temporal — Débitos por Mês")
+        if df_f.empty:
+            st.info("Sem dados.")
+        else:
+            tmp = df_f.copy()
+            tmp["MES"] = pd.to_datetime(tmp["DATA"]).dt.to_period("M").dt.to_timestamp()
+            g3 = tmp.groupby("MES", as_index=False)["VALOR"].sum().set_index("MES")["VALOR"]
+            st.line_chart(g3)
 
         st.divider()
         st.subheader("📋 Dados Filtrados — Débitos")
@@ -344,12 +347,8 @@ with tab_sald:
         if gsec.empty:
             st.info("Sem dados.")
         else:
-            fig = px.bar(gsec, x="SECRETARIA", y="SALDO BANCARIO",
-                         text=[format_brl(v) for v in gsec["SALDO BANCARIO"]],
-                         color="SECRETARIA")
-            fig.update_traces(hovertemplate="<b>%{x}</b><br>Saldo: %{y:,.2f}")
-            fig.update_layout(showlegend=False, xaxis_tickangle=45, margin=dict(l=10,r=10,t=30,b=80))
-            st.plotly_chart(fig, use_container_width=True)
+            gsec = gsec.set_index("SECRETARIA")["SALDO BANCARIO"]
+            st.bar_chart(gsec)
 
         st.divider()
         st.subheader("📋 Contas — Dados Filtrados")
