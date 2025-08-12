@@ -1,15 +1,4 @@
-
----
-
-# app.py (substitua o seu por este)
-
-> mudanças principais para parar de “ficar no forno”:  
-> • leitura de CSV **sem autodetecção pesada** (`sep=None` removido)  
-> • exportação de **imagens dos gráficos desativada por padrão** (evita esperar o `kaleido`)  
-> • guards extras quando não há gráfico/dados
-
-```python
-# app.py — robusto e pronto
+# app.py — robusto com export opcional de imagens (kaleido)
 import io
 import tempfile
 from datetime import datetime
@@ -18,17 +7,19 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 from fpdf import FPDF
-import plotly.io as pio  # necessário se usar export de imagem
+
+# --- Plotly (to_image usa kaleido). Se não houver kaleido, tratamos adiante ---
+import plotly.io as pio  # noqa: F401
 
 # ================================
 # Config geral
 # ================================
 st.set_page_config(layout="wide", page_title="Débitos • Saldos 2025")
 st.title("📊 Débitos • 🏦 Saldos — 2025")
-st.caption("Dashboards por abas. Export (Excel/PDF). Mapeamento de colunas, validações, duplicados/outliers e export opcional de imagens.")
+st.caption("Dashboards por abas. Exports (Excel/PDF). Mapeamento de colunas, validações, duplicados, outliers e exportação de gráficos (opcional).")
 
 # ================================
-# Helpers
+# Utilidades / Helpers
 # ================================
 BRL_EXCEL_FMT = u'[$R$-416] #,##0.00'
 
@@ -40,19 +31,14 @@ def format_brl(v):
 
 @st.cache_data(show_spinner=False, ttl=300)
 def load_table(uploaded_file) -> pd.DataFrame:
-    """Leitura rápida e robusta de CSV/XLS/XLSX (sem autodetecção lenta)."""
     name = uploaded_file.name.lower()
     if name.endswith(".csv"):
-        # tenta vírgula, depois ponto-e-vírgula, depois engine=python
+        # sep=None tenta detectar o separador. Se der ruim, caímos no except.
         try:
-            df = pd.read_csv(uploaded_file)  # padrão: vírgula
+            df = pd.read_csv(uploaded_file, sep=None, engine="python")
         except Exception:
             uploaded_file.seek(0)
-            try:
-                df = pd.read_csv(uploaded_file, sep=";")
-            except Exception:
-                uploaded_file.seek(0)
-                df = pd.read_csv(uploaded_file, engine="python")
+            df = pd.read_csv(uploaded_file)  # padrão (vírgula)
     else:
         df = pd.read_excel(uploaded_file)
     df.columns = df.columns.str.strip().str.upper()
@@ -60,10 +46,11 @@ def load_table(uploaded_file) -> pd.DataFrame:
 
 def cast_types_debitos(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    # DATA
     d1 = pd.to_datetime(df["DATA"], errors="coerce")
     d2 = pd.to_datetime(df["DATA"], errors="coerce", dayfirst=True)
     df["DATA"] = d1.fillna(d2)
-
+    # VALOR
     v1 = pd.to_numeric(df["VALOR"], errors="coerce")
     precisa_brl = v1.isna() & df["VALOR"].astype(str).str.contains(r"[.,]", na=False)
     v2 = pd.to_numeric(
@@ -72,15 +59,16 @@ def cast_types_debitos(df: pd.DataFrame) -> pd.DataFrame:
     )
     v1.loc[precisa_brl] = v2
     df["VALOR"] = v1.clip(lower=0)
-
+    # Texto
     df["FORNECEDOR"] = df["FORNECEDOR"].astype(str).str.strip()
     df["SECRETARIA"] = df["SECRETARIA"].astype(str).str.strip()
-
+    # CNPJ (opcional)
     if "CNPJ" in df.columns:
         df["CNPJ"] = df["CNPJ"].astype(str).str.replace(r"\D", "", regex=True).str.zfill(14)
-
+    # Limpeza
     df = df.dropna(subset=["DATA", "VALOR", "FORNECEDOR", "SECRETARIA"]).copy()
     df["VALOR"] = df["VALOR"].round(2)
+    # Tipos leves
     df["FORNECEDOR"] = df["FORNECEDOR"].astype("category")
     df["SECRETARIA"] = df["SECRETARIA"].astype("category")
     return df
@@ -111,6 +99,7 @@ def saldo_por_secretaria(df_saldos):
     return (df_saldos.groupby("SECRETARIA", as_index=False)["SALDO BANCARIO"]
             .sum().rename(columns={"SALDO BANCARIO":"SALDO_LIVRE"}))
 
+# --- Mapeador de Colunas ---
 def coluna_mapper_ui(cols_atual, req_cols, key_prefix):
     st.info("Mapeie suas colunas para o modelo esperado.")
     mapeamento = {}
@@ -132,7 +121,7 @@ def aplicar_mapeamento(df, mapa):
             cols_novas[alvo] = pd.Series([None]*len(df))
     return pd.DataFrame(cols_novas)
 
-# ===== PDF (tabelado) =====
+# ===== PDF seguro (em colunas, com rodapé) =====
 class PDFListagem(FPDF):
     def footer(self):
         self.set_y(-12)
@@ -203,12 +192,42 @@ def gerar_pdf_tabelado(df: pd.DataFrame, titulo="Relatório", quebra_por="SECRET
 
     return _pdf_to_bytes(pdf)
 
-# ===== Export de imagem (opcional) =====
+# ===== Exportar imagens dos gráficos (PNG) — safe =====
 def fig_to_png_bytes_safe(fig, scale=2):
     try:
         return fig.to_image(format="png", scale=scale)
     except Exception:
-        return None  # sem kaleido ou erro → não trava o app
+        # kaleido ausente ou erro de render → retorna None e avisamos na UI
+        return None
+
+# ===== Templates =====
+def gerar_template_debitos() -> io.BytesIO:
+    cols = ["DATA","FORNECEDOR","CNPJ","VALOR","SECRETARIA"]
+    df = pd.DataFrame(columns=cols)
+    df.loc[0] = ["01/01/2025","Fornecedor Exemplo LTDA","12345678000199", "1.234,56","SAÚDE"]
+    df.loc[1] = ["05/01/2025","ACME Serviços","11222333000188", "987,10","EDUCAÇÃO"]
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        df.to_excel(xw, index=False, sheet_name="Debitos")
+        ws = xw.sheets["Debitos"]
+        for row in range(2, 1002):
+            ws[f"D{row}"].number_format = BRL_EXCEL_FMT
+    buf.seek(0)
+    return buf
+
+def gerar_template_saldos() -> io.BytesIO:
+    cols = ["CONTA","NOME DA CONTA","SECRETARIA","BANCO","TIPO DE RECURSO","SALDO BANCARIO"]
+    df = pd.DataFrame(columns=cols)
+    df.loc[0] = ["123-4","Conta Saúde","SAÚDE","Banco X","LIVRE", 150000.00]
+    df.loc[1] = ["987-0","Conta Educação","EDUCAÇÃO","Banco Y","VINCULADO", 50000.00]
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        df.to_excel(xw, index=False, sheet_name="Saldos")
+        ws = xw.sheets["Saldos"]
+        for row in range(2, 1002):
+            ws[f"F{row}"].number_format = BRL_EXCEL_FMT
+    buf.seek(0)
+    return buf
 
 # ================================
 # ABAS
@@ -223,7 +242,8 @@ with tab_deb:
         up_deb = st.file_uploader("Envie Débitos (CSV/XLS/XLSX)", type=["csv","xls","xlsx"], key="deb_upload")
     with c2:
         st.markdown("**Modelos**")
-        # templates removidos por simplicidade — mantemos o foco em performance
+        st.download_button("📄 Baixar Template Débitos", data=gerar_template_debitos(),
+                           file_name="template_debitos.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     if not up_deb:
         st.info("Envie a planilha de Débitos para ver o dashboard.")
@@ -318,40 +338,40 @@ with tab_deb:
                 fig2.update_layout(showlegend=False, xaxis_tickangle=45, margin=dict(l=10,r=10,t=30,b=80))
                 st.plotly_chart(fig2, use_container_width=True)
 
-        st.divider()
+        # ====== Exportar imagens dos gráficos (Débitos) — somente se der certo ======
         st.subheader("🖼️ Exportar gráficos (Débitos)")
-        habilitar_img = st.checkbox("Habilitar exportação de imagens (requer 'kaleido')", value=False)
-        if habilitar_img:
-            png1 = fig_to_png_bytes_safe(fig1) if fig1 is not None else None
-            png2 = fig_to_png_bytes_safe(fig2) if fig2 is not None else None
-            col_img1, col_img2, col_img3 = st.columns(3)
-            with col_img1:
+        png1 = fig_to_png_bytes_safe(fig1) if fig1 is not None else None
+        png2 = fig_to_png_bytes_safe(fig2) if fig2 is not None else None
+
+        col_img1, col_img2, col_img3 = st.columns(3)
+        with col_img1:
+            if png1:
+                st.download_button("⬇️ PNG — Débitos por Secretaria",
+                                   data=png1, file_name="debitos_por_secretaria.png", mime="image/png")
+        with col_img2:
+            if png2:
+                st.download_button("⬇️ PNG — Top 10 Fornecedores",
+                                   data=png2, file_name="top10_fornecedores.png", mime="image/png")
+        with col_img3:
+            if png1 or png2:
+                pdf = FPDF(orientation="L", unit="mm", format="A4")
                 if png1:
-                    st.download_button("⬇️ PNG — Débitos por Secretaria",
-                                       data=png1, file_name="debitos_por_secretaria.png", mime="image/png")
-            with col_img2:
+                    pdf.add_page()
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp1:
+                        tmp1.write(png1); tmp1.flush()
+                        pdf.image(tmp1.name, x=10, y=10, w=277)
                 if png2:
-                    st.download_button("⬇️ PNG — Top 10 Fornecedores",
-                                       data=png2, file_name="top10_fornecedores.png", mime="image/png")
-            with col_img3:
-                if png1 or png2:
-                    pdf = FPDF(orientation="L", unit="mm", format="A4")
-                    if png1:
-                        pdf.add_page()
-                        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp1:
-                            tmp1.write(png1); tmp1.flush()
-                            pdf.image(tmp1.name, x=10, y=10, w=277)
-                    if png2:
-                        pdf.add_page()
-                        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp2:
-                            tmp2.write(png2); tmp2.flush()
-                            pdf.image(tmp2.name, x=10, y=10, w=277)
-                    st.download_button("📄 PDF — Dashboard Débitos",
-                                       data=_pdf_to_bytes(pdf),
-                                       file_name="dashboard_debitos_graficos.pdf",
-                                       mime="application/pdf")
-        else:
-            st.caption("Desmarque aqui se notar lentidão. Ative apenas quando quiser exportar imagens dos gráficos.")
+                    pdf.add_page()
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp2:
+                        tmp2.write(png2); tmp2.flush()
+                        pdf.image(tmp2.name, x=10, y=10, w=277)
+                st.download_button("📄 PDF — Dashboard Débitos",
+                                   data=_pdf_to_bytes(pdf),
+                                   file_name="dashboard_debitos_graficos.pdf",
+                                   mime="application/pdf")
+        if fig1 is None and fig2 is None:
+            st.caption("Para exportar imagens dos gráficos, gere os gráficos acima. "
+                       "Se aparecer aviso de dependência, instale `kaleido` no requirements.")
 
         st.divider()
         st.subheader("📋 Dados Filtrados")
@@ -389,7 +409,14 @@ with tab_deb:
 # -------------------- Saldos --------------------
 with tab_sald:
     st.subheader("📥 Entrada de Dados — Saldos")
-    up_sald = st.file_uploader("Envie Saldos (CSV/XLS/XLSX)", type=["csv","xls","xlsx"], key="sald_upload")
+    c1, c2 = st.columns([2,1])
+    with c1:
+        up_sald = st.file_uploader("Envie Saldos (CSV/XLS/XLSX)", type=["csv","xls","xlsx"], key="sald_upload")
+    with c2:
+        st.markdown("**Modelos**")
+        st.download_button("📄 Baixar Template Saldos", data=gerar_template_saldos(),
+                           file_name="template_saldos.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
     apenas_livre_ck = st.checkbox("Considerar apenas Recurso LIVRE", value=True)
 
     if not up_sald:
@@ -405,6 +432,10 @@ with tab_sald:
             sal_map = sal_raw[req_s].copy()
 
         sal = preparar_saldos(sal_map, apenas_livre=apenas_livre_ck)
+
+        if st.button("🧹 Limpar filtros (Saldos)"):
+            for k in ["sal_secs","sal_bancos","sal_tipos"]:
+                st.session_state.pop(k, None)
 
         st.sidebar.header("🔎 Filtros (Saldos)")
         secs_opt = sorted(sal["SECRETARIA"].astype(str).unique().tolist())
@@ -440,29 +471,29 @@ with tab_sald:
             fig.update_layout(showlegend=False, xaxis_tickangle=45, margin=dict(l=10,r=10,t=30,b=80))
             st.plotly_chart(fig, use_container_width=True)
 
-        st.divider()
+        # ====== Exportar imagem/PDF do gráfico (Saldos) — safe ======
         st.subheader("🖼️ Exportar gráficos (Saldos)")
-        habilitar_img_s = st.checkbox("Habilitar exportação de imagens (requer 'kaleido')", value=False, key="sald_img_ck")
-        if habilitar_img_s:
-            png_saldos = fig_to_png_bytes_safe(fig) if fig is not None else None
-            col_s1, col_s2 = st.columns(2)
-            with col_s1:
-                if png_saldos:
-                    st.download_button("⬇️ PNG — Saldos por Secretaria",
-                                       data=png_saldos, file_name="saldos_por_secretaria.png", mime="image/png")
-            with col_s2:
-                if png_saldos:
-                    pdf_s = FPDF(orientation="L", unit="mm", format="A4")
-                    pdf_s.add_page()
-                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                        tmp.write(png_saldos); tmp.flush()
-                        pdf_s.image(tmp.name, x=10, y=10, w=277)
-                    st.download_button("📄 PDF — Dashboard Saldos",
-                                       data=_pdf_to_bytes(pdf_s),
-                                       file_name="dashboard_saldos_grafico.pdf",
-                                       mime="application/pdf")
-        else:
-            st.caption("Ative apenas quando for exportar imagem; evita processamento extra.")
+        png_saldos = fig_to_png_bytes_safe(fig) if fig is not None else None
+
+        col_s1, col_s2 = st.columns(2)
+        with col_s1:
+            if png_saldos:
+                st.download_button("⬇️ PNG — Saldos por Secretaria",
+                                   data=png_saldos, file_name="saldos_por_secretaria.png", mime="image/png")
+        with col_s2:
+            if png_saldos:
+                pdf_s = FPDF(orientation="L", unit="mm", format="A4")
+                pdf_s.add_page()
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    tmp.write(png_saldos); tmp.flush()
+                    pdf_s.image(tmp.name, x=10, y=10, w=277)
+                st.download_button("📄 PDF — Dashboard Saldos",
+                                   data=_pdf_to_bytes(pdf_s),
+                                   file_name="dashboard_saldos_grafico.pdf",
+                                   mime="application/pdf")
+        if fig is None:
+            st.caption("Para exportar a imagem, gere o gráfico acima. "
+                       "Se aparecer aviso de dependência, instale `kaleido` no requirements.")
 
         st.divider()
         st.subheader("📋 Contas (filtradas)")
