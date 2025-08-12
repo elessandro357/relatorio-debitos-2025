@@ -1,15 +1,11 @@
-[theme]
-base="light"
-primaryColor="#0d6efd"
-backgroundColor="#ffffff"
-secondaryBackgroundColor="#f8f9fa"
-textColor="#000000"
-font="sans serif"
+# .streamlit/config.toml — CORRIGIDO
+[server]
+headless = true
 
 [theme]
-base="dark"
-primaryColor="#0d6efd"
-backgroundColor="#0e1117"
-secondaryBackgroundColor="#262730"
-textColor="#fafafa"
-font="sans serif"
+base = "light"
+primaryColor = "#0d6efd"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f8f9fa"
+textColor = "#000000"
+font = "sans serif"
