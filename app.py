@@ -9,7 +9,7 @@ import io
 # ================================
 st.set_page_config(layout="wide", page_title="Débitos • Saldos • Plano 2025")
 st.title("📊 Débitos • 🏦 Saldos • 💸 Plano de Pagamento (2025)")
-st.caption("Dashboards por abas + plano de pagamento proporcional por secretaria. Exporta Excel/PDF.")
+st.caption("Dashboards por abas + plano de pagamento proporcional por secretaria. Exporta Excel/PDF + gráficos (PNG/HTML).")
 
 # ================================
 # Utilidades / Helpers
@@ -30,12 +30,10 @@ def load_excel(f) -> pd.DataFrame:
 def cast_types_debitos(df: pd.DataFrame) -> pd.DataFrame:
     """DATA robusta (dayfirst) + VALOR aceita '1.234,56'."""
     df = df.copy()
-
     # DATA
     d1 = pd.to_datetime(df["DATA"], errors="coerce")
     d2 = pd.to_datetime(df["DATA"], errors="coerce", dayfirst=True)
     df["DATA"] = d1.fillna(d2)
-
     # VALOR
     v1 = pd.to_numeric(df["VALOR"], errors="coerce")
     precisa_brl = v1.isna() & df["VALOR"].astype(str).str.contains(r"[.,]", na=False)
@@ -45,11 +43,9 @@ def cast_types_debitos(df: pd.DataFrame) -> pd.DataFrame:
     )
     v1.loc[precisa_brl] = v2
     df["VALOR"] = v1
-
     # Texto
     df["FORNECEDOR"] = df["FORNECEDOR"].astype(str).str.strip()
     df["SECRETARIA"] = df["SECRETARIA"].astype(str).str.strip()
-
     # Limpeza
     df = df.dropna(subset=["DATA", "VALOR", "FORNECEDOR", "SECRETARIA"]).copy()
     df["VALOR"] = df["VALOR"].round(2)
@@ -71,6 +67,9 @@ def preparar_saldos(df_raw, apenas_livre=True):
     if apenas_livre and "TIPO DE RECURSO" in df.columns:
         df = df[df["TIPO DE RECURSO"].str.upper()=="LIVRE"]
     df["SALDO BANCARIO"] = pd.to_numeric(df["SALDO BANCARIO"], errors="coerce").fillna(0.0)
+    for c in ["SECRETARIA","BANCO","TIPO DE RECURSO","NOME DA CONTA","CONTA"]:
+        if c in df.columns:
+            df[c] = df[c].astype(str).str.strip()
     return df
 
 def saldo_por_secretaria(df_saldos):
@@ -185,6 +184,33 @@ def gerar_pdf_listagem(df: pd.DataFrame, titulo="Relatório"):
 
     return _pdf_to_bytesio(pdf)
 
+# ====== Downloads de gráficos (PNG/HTML) ======
+def _fig_png_bytes(fig):
+    try:
+        return fig.to_image(format="png", scale=2)  # requer kaleido
+    except Exception:
+        return None
+
+def _fig_html_bytes(fig):
+    html = fig.to_html(full_html=False, include_plotlyjs="cdn")
+    return html.encode("utf-8")
+
+def download_fig_buttons(fig, base_filename, key_prefix):
+    c1, c2 = st.columns(2)
+    with c1:
+        png = _fig_png_bytes(fig)
+        if png:
+            st.download_button("⬇️ Baixar PNG", data=png,
+                               file_name=f"{base_filename}.png", mime="image/png",
+                               key=f"{key_prefix}_png")
+        else:
+            st.caption("Para baixar PNG, adicione `kaleido==0.2.1` ao requirements.")
+    with c2:
+        html = _fig_html_bytes(fig)
+        st.download_button("⬇️ Baixar HTML (interativo)", data=html,
+                           file_name=f"{base_filename}.html", mime="text/html",
+                           key=f"{key_prefix}_html")
+
 # ================================
 # ABAS
 # ================================
@@ -228,6 +254,7 @@ with tab_dash:
             st.subheader("Débitos por Secretaria")
             if df_f.empty:
                 st.info("Sem dados.")
+                fig1 = None
             else:
                 g1 = df_f.groupby("SECRETARIA", as_index=False)["VALOR"].sum().sort_values("VALOR")
                 fig1 = px.bar(g1, x="VALOR", y="SECRETARIA", orientation="h",
@@ -235,10 +262,12 @@ with tab_dash:
                 fig1.update_traces(hovertemplate="<b>%{y}</b><br>Valor: %{x:,.2f}")
                 fig1.update_layout(showlegend=False, margin=dict(l=10,r=10,t=30,b=10))
                 st.plotly_chart(fig1, use_container_width=True)
+                download_fig_buttons(fig1, "debitos_por_secretaria", "deb1")
         with g2c:
             st.subheader("Top 10 Fornecedores")
             if df_f.empty:
                 st.info("Sem dados.")
+                fig2 = None
             else:
                 g2 = df_f.groupby("FORNECEDOR", as_index=False)["VALOR"].sum().sort_values("VALOR", ascending=False).head(10)
                 fig2 = px.bar(g2, x="FORNECEDOR", y="VALOR",
@@ -246,6 +275,7 @@ with tab_dash:
                 fig2.update_traces(hovertemplate="<b>%{x}</b><br>Valor: %{y:,.2f}")
                 fig2.update_layout(showlegend=False, xaxis_tickangle=45, margin=dict(l=10,r=10,t=30,b=80))
                 st.plotly_chart(fig2, use_container_width=True)
+                download_fig_buttons(fig2, "top10_fornecedores", "deb2")
 
         st.divider()
         st.subheader("📋 Dados Filtrados")
@@ -297,11 +327,15 @@ with tab_saldos:
         st.divider()
         st.subheader("Saldos por Secretaria")
         gsec = saldo_por_secretaria(sal_f).sort_values("SALDO_LIVRE", ascending=False)
-        fig = px.bar(gsec, x="SECRETARIA", y="SALDO_LIVRE",
-                     text=[format_brl(v) for v in gsec["SALDO_LIVRE"]], color="SECRETARIA")
-        fig.update_traces(hovertemplate="<b>%{x}</b><br>Saldo: %{y:,.2f}")
-        fig.update_layout(showlegend=False, xaxis_tickangle=45, margin=dict(l=10,r=10,t=30,b=80))
-        st.plotly_chart(fig, use_container_width=True)
+        if gsec.empty:
+            st.info("Sem dados.")
+        else:
+            fig = px.bar(gsec, x="SECRETARIA", y="SALDO_LIVRE",
+                         text=[format_brl(v) for v in gsec["SALDO_LIVRE"]], color="SECRETARIA")
+            fig.update_traces(hovertemplate="<b>%{x}</b><br>Saldo: %{y:,.2f}")
+            fig.update_layout(showlegend=False, xaxis_tickangle=45, margin=dict(l=10,r=10,t=30,b=80))
+            st.plotly_chart(fig, use_container_width=True)
+            download_fig_buttons(fig, "saldos_por_secretaria", "sald1")
 
         st.divider()
         st.subheader("📋 Contas (filtradas)")
@@ -352,6 +386,36 @@ with tab_plano:
         k1.metric("Saldo livre considerado", format_brl(quadro_sec["SALDO_LIVRE"].sum()))
         k2.metric("Pagamento previsto (total)", format_brl(quadro_sec["PAGAMENTO_PREVISTO"].sum()))
         k3.metric("Restante após pagamento", format_brl(quadro_sec["RESTANTE"].sum()))
+
+        st.divider()
+        st.subheader("📊 Gráfico — Pagamento Previsto vs Restante por Secretaria")
+        if quadro_sec.empty:
+            st.info("Sem dados.")
+        else:
+            m = quadro_sec.melt(id_vars="SECRETARIA",
+                                value_vars=["PAGAMENTO_PREVISTO","RESTANTE"],
+                                var_name="TIPO", value_name="VALOR")
+            figp = px.bar(m, x="SECRETARIA", y="VALOR", color="TIPO", barmode="group",
+                          text=[format_brl(v) for v in m["VALOR"]])
+            figp.update_traces(hovertemplate="<b>%{x}</b><br>%{legendgroup}: %{y:,.2f}")
+            figp.update_layout(xaxis_tickangle=45, margin=dict(l=10,r=10,t=30,b=80))
+            st.plotly_chart(figp, use_container_width=True)
+            download_fig_buttons(figp, "plano_pagamento_secretaria", "plano1")
+
+        st.subheader("📊 Gráfico — Rateio por Fornecedor (uma secretaria)")
+        if plano_for.empty:
+            st.info("Sem dados.")
+        else:
+            sec_opcoes = sorted(plano_for["SECRETARIA"].unique())
+            sec_sel = st.selectbox("Escolha a Secretaria para visualizar o rateio:", options=sec_opcoes, key="sec_rateio")
+            psec = plano_for[plano_for["SECRETARIA"]==sec_sel].copy()
+            psec = psec.sort_values("PAGAR_AGORA", ascending=False)
+            figpf = px.bar(psec, x="FORNECEDOR", y="PAGAR_AGORA", color="FORNECEDOR",
+                           text=[format_brl(v) for v in psec["PAGAR_AGORA"]])
+            figpf.update_traces(hovertemplate="<b>%{x}</b><br>Pagar agora: %{y:,.2f}")
+            figpf.update_layout(showlegend=False, xaxis_tickangle=45, margin=dict(l=10,r=10,t=30,b=80))
+            st.plotly_chart(figpf, use_container_width=True)
+            download_fig_buttons(figpf, f"rateio_fornecedores_{sec_sel}".replace(" ","_").lower(), "plano2")
 
         st.divider()
         st.subheader("📋 Resumo por Secretaria")
