@@ -1,4 +1,15 @@
-# app.py — robusto com export opcional de imagens (kaleido)
+# app.py
+# ============================================================
+# Relatório de Débitos • Saldos (2025)
+# Dashboards de Débitos e Saldos com:
+# - Upload CSV/XLS/XLSX
+# - Mapeador de colunas (quando cabeçalhos diferem)
+# - Validações (datas/valores/CNPJ), consolidação e outliers
+# - Exportações: Excel (com formatação BRL + Resumo), PDF (tabelado)
+# - Exportar gráficos: PNG + PDF do dashboard (via kaleido + fpdf2)
+# Requisitos (requirements.txt): streamlit, pandas, plotly, fpdf2, openpyxl, kaleido
+# ============================================================
+
 import io
 import tempfile
 from datetime import datetime
@@ -8,15 +19,15 @@ import plotly.express as px
 import streamlit as st
 from fpdf import FPDF
 
-# --- Plotly (to_image usa kaleido). Se não houver kaleido, tratamos adiante ---
-import plotly.io as pio  # noqa: F401
+# ========= Plotly (para PNG via kaleido) =========
+import plotly.io as pio  # noqa: F401  (import necessário para .to_image funcionar)
 
 # ================================
 # Config geral
 # ================================
 st.set_page_config(layout="wide", page_title="Débitos • Saldos 2025")
 st.title("📊 Débitos • 🏦 Saldos — 2025")
-st.caption("Dashboards por abas. Exports (Excel/PDF). Mapeamento de colunas, validações, duplicados, outliers e exportação de gráficos (opcional).")
+st.caption("Dashboards por abas. Exports (Excel/PDF). Mapeamento de colunas, validações, duplicados, outliers e exportação de gráficos.")
 
 # ================================
 # Utilidades / Helpers
@@ -24,6 +35,7 @@ st.caption("Dashboards por abas. Exports (Excel/PDF). Mapeamento de colunas, val
 BRL_EXCEL_FMT = u'[$R$-416] #,##0.00'
 
 def format_brl(v):
+    """R$ 1.234,56 sem depender de locale."""
     try:
         return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception:
@@ -31,25 +43,24 @@ def format_brl(v):
 
 @st.cache_data(show_spinner=False, ttl=300)
 def load_table(uploaded_file) -> pd.DataFrame:
+    """Lê CSV/XLS/XLSX e normaliza cabeçalhos (CAIXA ALTA, trim)."""
     name = uploaded_file.name.lower()
     if name.endswith(".csv"):
-        # sep=None tenta detectar o separador. Se der ruim, caímos no except.
-        try:
-            df = pd.read_csv(uploaded_file, sep=None, engine="python")
-        except Exception:
-            uploaded_file.seek(0)
-            df = pd.read_csv(uploaded_file)  # padrão (vírgula)
+        df = pd.read_csv(uploaded_file, sep=None, engine="python")
     else:
         df = pd.read_excel(uploaded_file)
     df.columns = df.columns.str.strip().str.upper()
     return df
 
 def cast_types_debitos(df: pd.DataFrame) -> pd.DataFrame:
+    """DATA robusta (dayfirst) + VALOR aceita '1.234,56' + validações básicas."""
     df = df.copy()
+
     # DATA
     d1 = pd.to_datetime(df["DATA"], errors="coerce")
     d2 = pd.to_datetime(df["DATA"], errors="coerce", dayfirst=True)
     df["DATA"] = d1.fillna(d2)
+
     # VALOR
     v1 = pd.to_numeric(df["VALOR"], errors="coerce")
     precisa_brl = v1.isna() & df["VALOR"].astype(str).str.contains(r"[.,]", na=False)
@@ -59,15 +70,19 @@ def cast_types_debitos(df: pd.DataFrame) -> pd.DataFrame:
     )
     v1.loc[precisa_brl] = v2
     df["VALOR"] = v1.clip(lower=0)
+
     # Texto
     df["FORNECEDOR"] = df["FORNECEDOR"].astype(str).str.strip()
     df["SECRETARIA"] = df["SECRETARIA"].astype(str).str.strip()
-    # CNPJ (opcional)
+
+    # CNPJ (se existir)
     if "CNPJ" in df.columns:
         df["CNPJ"] = df["CNPJ"].astype(str).str.replace(r"\D", "", regex=True).str.zfill(14)
+
     # Limpeza
     df = df.dropna(subset=["DATA", "VALOR", "FORNECEDOR", "SECRETARIA"]).copy()
     df["VALOR"] = df["VALOR"].round(2)
+
     # Tipos leves
     df["FORNECEDOR"] = df["FORNECEDOR"].astype("category")
     df["SECRETARIA"] = df["SECRETARIA"].astype("category")
@@ -99,7 +114,7 @@ def saldo_por_secretaria(df_saldos):
     return (df_saldos.groupby("SECRETARIA", as_index=False)["SALDO BANCARIO"]
             .sum().rename(columns={"SALDO BANCARIO":"SALDO_LIVRE"}))
 
-# --- Mapeador de Colunas ---
+# ===== Mapeador de Colunas =====
 def coluna_mapper_ui(cols_atual, req_cols, key_prefix):
     st.info("Mapeie suas colunas para o modelo esperado.")
     mapeamento = {}
@@ -119,7 +134,8 @@ def aplicar_mapeamento(df, mapa):
             cols_novas[alvo] = df[origem]
         else:
             cols_novas[alvo] = pd.Series([None]*len(df))
-    return pd.DataFrame(cols_novas)
+    df_m = pd.DataFrame(cols_novas)
+    return df_m
 
 # ===== PDF seguro (em colunas, com rodapé) =====
 class PDFListagem(FPDF):
@@ -128,7 +144,7 @@ class PDFListagem(FPDF):
         self.set_font("Arial", "I", 8)
         self.cell(0, 10, f"Página {self.page_no()}", 0, 0, "C")
 
-def _pdf_to_bytes(pdf_obj):
+def _pdf_to_bytesio(pdf_obj):
     out = pdf_obj.output(dest="S")
     return out if isinstance(out, (bytes, bytearray)) else out.encode("latin-1", "ignore")
 
@@ -153,7 +169,7 @@ def gerar_pdf_tabelado(df: pd.DataFrame, titulo="Relatório", quebra_por="SECRET
     if df.empty:
         pdf.set_font("Arial", size=10)
         pdf.multi_cell(0, 7, "Nenhum registro.")
-        return _pdf_to_bytes(pdf)
+        return _pdf_to_bytesio(pdf)
 
     cols = list(df.columns)
     epw = pdf.w - 2 * pdf.l_margin
@@ -184,21 +200,19 @@ def gerar_pdf_tabelado(df: pd.DataFrame, titulo="Relatório", quebra_por="SECRET
                 pdf.multi_cell(w, 6, txt, border=0, new_x="RIGHT", new_y="TOP")
             pdf.multi_cell(0, 2, "", border=0, new_x="LMARGIN", new_y="NEXT")
 
+        # totais por grupo
         if total_cols:
             pdf.set_font("Arial", 'B', 10)
             tot_line = " | ".join([f"{c}: {format_brl(gdf[c].sum())}" for c in total_cols])
             pdf.multi_cell(0, 8, f"Totais do grupo → {tot_line}", border=0)
             pdf.ln(2)
 
-    return _pdf_to_bytes(pdf)
+    return _pdf_to_bytesio(pdf)
 
-# ===== Exportar imagens dos gráficos (PNG) — safe =====
-def fig_to_png_bytes_safe(fig, scale=2):
-    try:
-        return fig.to_image(format="png", scale=scale)
-    except Exception:
-        # kaleido ausente ou erro de render → retorna None e avisamos na UI
-        return None
+# ===== Exportar imagens dos gráficos (PNG) =====
+def fig_to_png_bytes(fig, scale=2):
+    """Gera PNG (bytes) de um gráfico Plotly (precisa de 'kaleido')."""
+    return fig.to_image(format="png", scale=scale)
 
 # ===== Templates =====
 def gerar_template_debitos() -> io.BytesIO:
@@ -257,6 +271,7 @@ with tab_deb:
         else:
             df_m = df_raw[req].copy()
 
+        # Opções de pré-processamento
         st.markdown("### ⚙️ Opções")
         colA, colB, colC = st.columns(3)
         with colA:
@@ -266,18 +281,22 @@ with tab_deb:
         with colC:
             limpar_filtros_click = st.button("🧹 Limpar filtros")
 
+        # Converte tipos
         df = cast_types_debitos(df_m)
 
+        # Consolidar duplicados
         if consolidar:
             df = (df.groupby(["DATA","FORNECEDOR","CNPJ","SECRETARIA"], as_index=False)["VALOR"]
                     .sum().sort_values("DATA"))
 
+        # Outliers
         if marcar_outliers and not df.empty:
             p95 = df.groupby("SECRETARIA")["VALOR"].transform(lambda s: s.quantile(0.95))
             df["ALERTA_OUTLIER"] = (df["VALOR"] > p95).map({True:"ALTO", False:""})
         else:
             df["ALERTA_OUTLIER"] = ""
 
+        # -------- Filtros (persistentes) --------
         if limpar_filtros_click:
             for k in ["deb_secs","deb_forns","deb_dini","deb_dfim"]:
                 st.session_state.pop(k, None)
@@ -313,7 +332,6 @@ with tab_deb:
 
         st.divider()
         g1c,g2c = st.columns(2)
-        fig1, fig2 = None, None
         with g1c:
             st.subheader("Débitos por Secretaria")
             if df_f.empty:
@@ -338,10 +356,10 @@ with tab_deb:
                 fig2.update_layout(showlegend=False, xaxis_tickangle=45, margin=dict(l=10,r=10,t=30,b=80))
                 st.plotly_chart(fig2, use_container_width=True)
 
-        # ====== Exportar imagens dos gráficos (Débitos) — somente se der certo ======
+        # ====== Exportar imagens dos gráficos (Débitos) ======
         st.subheader("🖼️ Exportar gráficos (Débitos)")
-        png1 = fig_to_png_bytes_safe(fig1) if fig1 is not None else None
-        png2 = fig_to_png_bytes_safe(fig2) if fig2 is not None else None
+        png1 = fig_to_png_bytes(fig1) if 'fig1' in locals() and df_f.shape[0] > 0 else None
+        png2 = fig_to_png_bytes(fig2) if 'fig2' in locals() and df_f.shape[0] > 0 else None
 
         col_img1, col_img2, col_img3 = st.columns(3)
         with col_img1:
@@ -365,13 +383,11 @@ with tab_deb:
                     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp2:
                         tmp2.write(png2); tmp2.flush()
                         pdf.image(tmp2.name, x=10, y=10, w=277)
+                out = _pdf_to_bytesio(pdf)
                 st.download_button("📄 PDF — Dashboard Débitos",
-                                   data=_pdf_to_bytes(pdf),
+                                   data=out,
                                    file_name="dashboard_debitos_graficos.pdf",
                                    mime="application/pdf")
-        if fig1 is None and fig2 is None:
-            st.caption("Para exportar imagens dos gráficos, gere os gráficos acima. "
-                       "Se aparecer aviso de dependência, instale `kaleido` no requirements.")
 
         st.divider()
         st.subheader("📋 Dados Filtrados")
@@ -381,12 +397,15 @@ with tab_deb:
         st.markdown(f"**Total exibido:** {format_brl(df_f['VALOR'].sum() if not df_f.empty else 0)}")
 
         st.subheader("📥 Exportar (Débitos)")
+        # Excel com aba Resumo e formatação BRL
         xbuf = io.BytesIO()
         with pd.ExcelWriter(xbuf, engine="openpyxl") as xw:
             df_f.to_excel(xw, index=False, sheet_name="Debitos")
             ws = xw.sheets["Debitos"]
+            # Coluna VALOR (4ª) → BRL
             for row in range(2, len(df_f)+2):
                 ws[f"D{row}"].number_format = BRL_EXCEL_FMT
+            # Resumo
             resumo = pd.DataFrame({
                 "Métrica":["Total filtrado","Registros","Fornecedores","Secretarias"],
                 "Valor":[df_f["VALOR"].sum(), len(df_f), df_f["FORNECEDOR"].nunique(), df_f["SECRETARIA"].nunique()]
@@ -399,6 +418,7 @@ with tab_deb:
                            file_name="debitos_filtrados.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+        # PDF com quebra por secretaria
         pdf_df = df_f.copy()
         pdf_df["VALOR"] = pdf_df["VALOR"].round(2)
         pdf_bytes = gerar_pdf_tabelado(pdf_df[["DATA","FORNECEDOR","CNPJ","VALOR","SECRETARIA"]],
@@ -433,6 +453,7 @@ with tab_sald:
 
         sal = preparar_saldos(sal_map, apenas_livre=apenas_livre_ck)
 
+        # Limpar filtros
         if st.button("🧹 Limpar filtros (Saldos)"):
             for k in ["sal_secs","sal_bancos","sal_tipos"]:
                 st.session_state.pop(k, None)
@@ -447,7 +468,7 @@ with tab_sald:
         tipos = st.sidebar.multiselect("Tipo de Recurso", tipos_opt, default=st.session_state.get("sal_tipos", []), key="sal_tipos")
 
         sal_f = sal.copy()
-        if secs:  sal_f = sal_f[sal_f["SECRETARIA"].astype(str).isin(secs)]
+        if secs: sal_f = sal_f[sal_f["SECRETARIA"].astype(str).isin(secs)]
         if bancos: sal_f = sal_f[sal_f["BANCO"].astype(str).isin(bancos)]
         if tipos and "TIPO DE RECURSO" in sal_f.columns:
             sal_f = sal_f[sal_f["TIPO DE RECURSO"].astype(str).isin(tipos)]
@@ -461,19 +482,18 @@ with tab_sald:
         st.divider()
         st.subheader("Saldos por Secretaria")
         gsec = saldo_por_secretaria(sal_f).sort_values("SALDO_LIVRE", ascending=False)
-        fig = None
         if gsec.empty:
             st.info("Sem dados.")
         else:
             fig = px.bar(gsec, x="SECRETARIA", y="SALDO_LIVRE",
-                         text=[format_brl(v) for v in gsec["SALDO_LIVRE"]], color="SECRETARIA")
+                        text=[format_brl(v) for v in gsec["SALDO_LIVRE"]], color="SECRETARIA")
             fig.update_traces(hovertemplate="<b>%{x}</b><br>Saldo: %{y:,.2f}")
             fig.update_layout(showlegend=False, xaxis_tickangle=45, margin=dict(l=10,r=10,t=30,b=80))
             st.plotly_chart(fig, use_container_width=True)
 
-        # ====== Exportar imagem/PDF do gráfico (Saldos) — safe ======
+        # ====== Exportar imagem/PDF do gráfico (Saldos) ======
         st.subheader("🖼️ Exportar gráficos (Saldos)")
-        png_saldos = fig_to_png_bytes_safe(fig) if fig is not None else None
+        png_saldos = fig_to_png_bytes(fig) if 'fig' in locals() and not gsec.empty else None
 
         col_s1, col_s2 = st.columns(2)
         with col_s1:
@@ -487,13 +507,11 @@ with tab_sald:
                 with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                     tmp.write(png_saldos); tmp.flush()
                     pdf_s.image(tmp.name, x=10, y=10, w=277)
+                out = _pdf_to_bytesio(pdf_s)
                 st.download_button("📄 PDF — Dashboard Saldos",
-                                   data=_pdf_to_bytes(pdf_s),
+                                   data=out,
                                    file_name="dashboard_saldos_grafico.pdf",
                                    mime="application/pdf")
-        if fig is None:
-            st.caption("Para exportar a imagem, gere o gráfico acima. "
-                       "Se aparecer aviso de dependência, instale `kaleido` no requirements.")
 
         st.divider()
         st.subheader("📋 Contas (filtradas)")
@@ -503,10 +521,12 @@ with tab_sald:
         st.markdown(f"**Total exibido:** {format_brl(sal_f['SALDO BANCARIO'].sum())}")
 
         st.subheader("📥 Exportar (Saldos)")
+        # Excel (dados + resumo)
         bsal = io.BytesIO()
         with pd.ExcelWriter(bsal, engine="openpyxl") as xw:
             sal_f.to_excel(xw, index=False, sheet_name="Saldos")
             ws = xw.sheets["Saldos"]
+            # Coluna SALDO (6ª) → BRL
             for row in range(2, len(sal_f)+2):
                 ws[f"F{row}"].number_format = BRL_EXCEL_FMT
             resumo = pd.DataFrame({
@@ -521,6 +541,7 @@ with tab_sald:
                            file_name="saldos_filtrados.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+        # PDF (tabelado, quebrado por secretaria)
         pdf_sal = gerar_pdf_tabelado(
             sal_f[["CONTA","NOME DA CONTA","SECRETARIA","BANCO","TIPO DE RECURSO","SALDO BANCARIO"]],
             "Saldos — Contas Filtradas", quebra_por="SECRETARIA"
