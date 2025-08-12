@@ -1,26 +1,13 @@
-# app.py — Débitos e Saldos (sem Plotly, não trava no Cloud)
-# --------------------------------------------------------------
-# • Abas: Débitos e Saldos
-# • Upload de planilhas (CSV/XLS/XLSX)
-# • Mapeador de colunas quando cabeçalhos diferem
-# • Filtros na sidebar + KPIs
-# • Gráficos nativos do Streamlit (bar_chart / line_chart)
-# • Exportação: Excel (com Resumo) e PDF tabelado
-# --------------------------------------------------------------
-
+# app.py — Débitos e Saldos (SEM Plotly) — VERSAO FORCADA
 import io
 import pandas as pd
 import streamlit as st
 from fpdf import FPDF
 
-# ----------------------- Config -----------------------
-st.set_page_config(layout="wide", page_title="Débitos e Saldos — Painel")
-st.title("📊 Débitos • 🏦 Saldos — Painel (sem Plotly)")
-st.caption("Upload, filtros, KPIs, gráficos nativos e exportações (Excel/PDF).")
+st.set_page_config(layout="wide", page_title="Débitos e Saldos — SEM Plotly")
+st.title("📊 Débitos • 🏦 Saldos — (deploy estável, sem Plotly)")
 
-# --------------------- Utilidades ---------------------
 BRL_EXCEL_FMT = u'[$R$-416] #,##0.00'
-
 def format_brl(v):
     try:
         return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -53,33 +40,31 @@ def validar_saldos_cols(cols):
 
 def coluna_mapper_ui(cols_atual, req_cols, key_prefix):
     st.info("Mapeie suas colunas para o modelo esperado.")
-    mapeamento = {}
+    m = {}
     for alvo in req_cols:
         opts = ["(não existe)"] + list(cols_atual)
-        mapeamento[alvo] = st.selectbox(
+        m[alvo] = st.selectbox(
             f"Coluna do arquivo para **{alvo}**",
             options=opts,
             index=opts.index(alvo) if alvo in cols_atual else 0,
             key=f"{key_prefix}_{alvo}"
         )
-    return mapeamento
+    return m
 
 def aplicar_mapeamento(df, mapa):
-    cols_novas = {}
+    out = {}
     for alvo, origem in mapa.items():
         if origem != "(não existe)" and origem in df.columns:
-            cols_novas[alvo] = df[origem]
+            out[alvo] = df[origem]
         else:
-            cols_novas[alvo] = pd.Series([None]*len(df))
-    return pd.DataFrame(cols_novas)
+            out[alvo] = pd.Series([None]*len(df))
+    return pd.DataFrame(out)
 
 def cast_types_debitos(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    # DATA
     d1 = pd.to_datetime(df["DATA"], errors="coerce")
     d2 = pd.to_datetime(df["DATA"], errors="coerce", dayfirst=True)
     df["DATA"] = d1.fillna(d2)
-    # VALOR (aceita 1.234,56)
     v1 = pd.to_numeric(df["VALOR"], errors="coerce")
     precisa_brl = v1.isna() & df["VALOR"].astype(str).str.contains(r"[.,]", na=False)
     v2 = pd.to_numeric(
@@ -88,12 +73,10 @@ def cast_types_debitos(df: pd.DataFrame) -> pd.DataFrame:
     )
     v1.loc[precisa_brl] = v2
     df["VALOR"] = v1.clip(lower=0).round(2)
-    # Texto
     df["FORNECEDOR"] = df["FORNECEDOR"].astype(str).str.strip()
     df["SECRETARIA"] = df["SECRETARIA"].astype(str).str.strip()
     if "CNPJ" in df.columns:
         df["CNPJ"] = df["CNPJ"].astype(str).str.replace(r"\D", "", regex=True).str.zfill(14)
-    # Limpeza
     df = df.dropna(subset=["DATA","VALOR","FORNECEDOR","SECRETARIA"]).copy()
     return df
 
@@ -105,7 +88,6 @@ def preparar_saldos(df):
             df[c] = df[c].astype(str).str.strip()
     return df
 
-# --------------------- PDF Tabelado ---------------------
 class PDFListagem(FPDF):
     def footer(self):
         self.set_y(-12)
@@ -133,22 +115,17 @@ def gerar_pdf_tabelado(df: pd.DataFrame, titulo="Relatório", quebra_por="SECRET
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(0, 10, txt=titulo, ln=True, align="C")
     pdf.ln(2)
-
     if df.empty:
         pdf.set_font("Arial", size=10)
         pdf.multi_cell(0, 7, "Nenhum registro.")
         return _pdf_to_bytes(pdf)
-
     cols = list(df.columns)
     epw = pdf.w - 2 * pdf.l_margin
     widths = [epw / len(cols)] * len(cols)
-
     grupos = [(None, df)]
     if quebra_por in df.columns:
         grupos = list(df.groupby(quebra_por, sort=True))
-
     total_cols = [c for c in cols if any(k in c.upper() for k in ["VALOR","SALDO"])]
-
     for gnome, gdf in grupos:
         pdf.set_font("Arial", 'B', 11)
         if gnome is not None:
@@ -158,7 +135,6 @@ def gerar_pdf_tabelado(df: pd.DataFrame, titulo="Relatório", quebra_por="SECRET
             pdf.multi_cell(w, 7, _chunk_long_words(c, 20), border=0, new_x="RIGHT", new_y="TOP")
         pdf.multi_cell(0, 2, "", border=0, new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("Arial", size=10)
-
         for _, row in gdf.iterrows():
             for c, w in zip(cols, widths):
                 txt = row[c]
@@ -167,23 +143,18 @@ def gerar_pdf_tabelado(df: pd.DataFrame, titulo="Relatório", quebra_por="SECRET
                 txt = _chunk_long_words(txt, 30)
                 pdf.multi_cell(w, 6, txt, border=0, new_x="RIGHT", new_y="TOP")
             pdf.multi_cell(0, 2, "", border=0, new_x="LMARGIN", new_y="NEXT")
-
         if total_cols:
             pdf.set_font("Arial", 'B', 10)
             tot_line = " | ".join([f"{c}: {format_brl(gdf[c].sum())}" for c in total_cols])
             pdf.multi_cell(0, 8, f"Totais do grupo → {tot_line}", border=0)
             pdf.ln(2)
-
     return _pdf_to_bytes(pdf)
 
-# ====================== ABAS ======================
 tab_deb, tab_sald = st.tabs(["📈 Débitos", "🏦 Saldos"])
 
-# -------------------- Débitos --------------------
 with tab_deb:
     st.subheader("📥 Envie a planilha de Débitos")
     up_deb = st.file_uploader("Arquivos: CSV/XLS/XLSX", type=["csv","xls","xlsx"], key="deb")
-
     if not up_deb:
         st.info("Envie a planilha de Débitos para ver o painel.")
     else:
@@ -195,10 +166,8 @@ with tab_deb:
             df_m = aplicar_mapeamento(raw, mapa)
         else:
             df_m = raw[req].copy()
-
         df = cast_types_debitos(df_m)
 
-        # -------- Filtros --------
         st.sidebar.header("🔎 Filtros — Débitos")
         dmin = pd.to_datetime(df["DATA"]).min().date()
         dmax = pd.to_datetime(df["DATA"]).max().date()
@@ -209,19 +178,14 @@ with tab_deb:
             dfim = st.date_input("Data final", dmax, key="deb_df")
         if di > dfim:
             st.sidebar.error("Data inicial > Data final."); st.stop()
-
         secs = sorted(df["SECRETARIA"].unique().tolist())
         forns = sorted(df["FORNECEDOR"].unique().tolist())
         f_secs = st.sidebar.multiselect("Secretaria", secs)
         f_forns = st.sidebar.multiselect("Fornecedor", forns)
-
         df_f = df[(df["DATA"] >= pd.to_datetime(di)) & (df["DATA"] <= pd.to_datetime(dfim))].copy()
-        if f_secs:
-            df_f = df_f[df_f["SECRETARIA"].isin(f_secs)]
-        if f_forns:
-            df_f = df_f[df_f["FORNECEDOR"].isin(f_forns)]
+        if f_secs: df_f = df_f[df_f["SECRETARIA"].isin(f_secs)]
+        if f_forns: df_f = df_f[df_f["FORNECEDOR"].isin(f_forns)]
 
-        # -------- KPIs --------
         k1,k2,k3,k4 = st.columns(4)
         k1.metric("Total (filtrado)", format_brl(df_f["VALOR"].sum() if not df_f.empty else 0))
         k2.metric("Registros", f"{len(df_f)}")
@@ -230,31 +194,25 @@ with tab_deb:
 
         st.divider()
         g1c,g2c = st.columns(2)
-
         with g1c:
             st.subheader("Débitos por Secretaria")
-            if df_f.empty:
-                st.info("Sem dados.")
+            if df_f.empty: st.info("Sem dados.")
             else:
                 g1 = (df_f.groupby("SECRETARIA", as_index=False)["VALOR"].sum()
-                      .sort_values("VALOR"))
-                g1 = g1.set_index("SECRETARIA")["VALOR"]
+                      .sort_values("VALOR")).set_index("SECRETARIA")["VALOR"]
                 st.bar_chart(g1)
-
         with g2c:
             st.subheader("Top 10 Fornecedores")
-            if df_f.empty:
-                st.info("Sem dados.")
+            if df_f.empty: st.info("Sem dados.")
             else:
                 g2 = (df_f.groupby("FORNECEDOR", as_index=False)["VALOR"]
-                      .sum().sort_values("VALOR", ascending=False).head(10))
-                g2 = g2.set_index("FORNECEDOR")["VALOR"]
+                      .sum().sort_values("VALOR", ascending=False).head(10)
+                      ).set_index("FORNECEDOR")["VALOR"]
                 st.bar_chart(g2)
 
         st.divider()
         st.subheader("📈 Série Temporal — Débitos por Mês")
-        if df_f.empty:
-            st.info("Sem dados.")
+        if df_f.empty: st.info("Sem dados.")
         else:
             tmp = df_f.copy()
             tmp["MES"] = pd.to_datetime(tmp["DATA"]).dt.to_period("M").dt.to_timestamp()
@@ -269,14 +227,11 @@ with tab_deb:
         st.markdown(f"**Total exibido:** {format_brl(df_f['VALOR'].sum() if not df_f.empty else 0)}")
 
         st.subheader("📥 Exportar — Débitos")
-        # Excel + Resumo
         xbuf = io.BytesIO()
         with pd.ExcelWriter(xbuf, engine="openpyxl") as xw:
             df_f.to_excel(xw, index=False, sheet_name="Debitos")
             ws = xw.sheets["Debitos"]
-            # Coluna D (VALOR) com formato BRL
-            for row in range(2, len(df_f)+2):
-                ws[f"D{row}"].number_format = BRL_EXCEL_FMT
+            for row in range(2, len(df_f)+2): ws[f"D{row}"].number_format = BRL_EXCEL_FMT
             resumo = pd.DataFrame({
                 "Métrica":["Total filtrado","Registros","Fornecedores","Secretarias"],
                 "Valor":[df_f["VALOR"].sum(), len(df_f), df_f["FORNECEDOR"].nunique(), df_f["SECRETARIA"].nunique()]
@@ -287,21 +242,16 @@ with tab_deb:
         st.download_button("⬇️ Excel (dados + Resumo)", data=xbuf,
                            file_name="debitos_filtrados.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-        # PDF (quebrado por Secretaria)
         pdf_df = df_f.copy()
         pdf_bytes = gerar_pdf_tabelado(pdf_df[["DATA","FORNECEDOR","CNPJ","VALOR","SECRETARIA"]],
                                        "Débitos — Dados Filtrados", quebra_por="SECRETARIA")
         st.download_button("⬇️ PDF (quebrado por Secretaria)", data=pdf_bytes,
                            file_name="debitos_filtrados.pdf", mime="application/pdf")
 
-# -------------------- Saldos --------------------
 with tab_sald:
     st.subheader("📥 Envie a planilha de Saldos")
     up_sald = st.file_uploader("Arquivos: CSV/XLS/XLSX", type=["csv","xls","xlsx"], key="sald")
-
     apenas_livre = st.checkbox("Considerar apenas Recurso LIVRE", value=True)
-
     if not up_sald:
         st.info("Envie a planilha de Saldos para ver o painel.")
     else:
@@ -313,28 +263,24 @@ with tab_sald:
             df_m = aplicar_mapeamento(raw, mapa)
         else:
             df_m = raw[req].copy()
-
         sal = preparar_saldos(df_m)
         if apenas_livre and "TIPO DE RECURSO" in sal.columns:
             sal = sal[sal["TIPO DE RECURSO"].str.upper()=="LIVRE"].copy()
 
-        # -------- Filtros --------
         st.sidebar.header("🔎 Filtros — Saldos")
         secs = sorted(sal["SECRETARIA"].astype(str).unique().tolist())
         bancos = sorted(sal["BANCO"].astype(str).unique().tolist())
         tipos = sorted(sal["TIPO DE RECURSO"].astype(str).unique().tolist()) if "TIPO DE RECURSO" in sal.columns else []
-
         f_secs = st.sidebar.multiselect("Secretaria (saldos)", secs)
         f_bancos = st.sidebar.multiselect("Banco", bancos)
         f_tipos = st.sidebar.multiselect("Tipo de Recurso", tipos)
 
         sal_f = sal.copy()
-        if f_secs: sal_f = sal_f[sal_f["SECRETARIA"].astype(str).isin(f_secs)]
+        if f_secs:  sal_f = sal_f[sal_f["SECRETARIA"].astype(str).isin(f_secs)]
         if f_bancos: sal_f = sal_f[sal_f["BANCO"].astype(str).isin(f_bancos)]
         if f_tipos and "TIPO DE RECURSO" in sal_f.columns:
             sal_f = sal_f[sal_f["TIPO DE RECURSO"].astype(str).isin(f_tipos)]
 
-        # -------- KPIs --------
         k1,k2,k3 = st.columns(3)
         k1.metric("Saldo total (filtrado)", format_brl(sal_f["SALDO BANCARIO"].sum()))
         k2.metric("Contas", f"{len(sal_f)}")
@@ -343,12 +289,10 @@ with tab_sald:
         st.divider()
         st.subheader("Saldos por Secretaria")
         gsec = (sal_f.groupby("SECRETARIA", as_index=False)["SALDO BANCARIO"]
-                .sum().sort_values("SALDO BANCARIO", ascending=False))
-        if gsec.empty:
-            st.info("Sem dados.")
-        else:
-            gsec = gsec.set_index("SECRETARIA")["SALDO BANCARIO"]
-            st.bar_chart(gsec)
+                .sum().sort_values("SALDO BANCARIO", ascending=False)
+                ).set_index("SECRETARIA")["SALDO BANCARIO"]
+        if gsec.empty: st.info("Sem dados.")
+        else:         st.bar_chart(gsec)
 
         st.divider()
         st.subheader("📋 Contas — Dados Filtrados")
@@ -358,14 +302,11 @@ with tab_sald:
         st.markdown(f"**Total exibido:** {format_brl(sal_f['SALDO BANCARIO'].sum())}")
 
         st.subheader("📥 Exportar — Saldos")
-        # Excel + Resumo
         bsal = io.BytesIO()
         with pd.ExcelWriter(bsal, engine="openpyxl") as xw:
             sal_f.to_excel(xw, index=False, sheet_name="Saldos")
             ws = xw.sheets["Saldos"]
-            # Coluna F (SALDO) com formato BRL
-            for row in range(2, len(sal_f)+2):
-                ws[f"F{row}"].number_format = BRL_EXCEL_FMT
+            for row in range(2, len(sal_f)+2): ws[f"F{row}"].number_format = BRL_EXCEL_FMT
             resumo = pd.DataFrame({
                 "Métrica":["Saldo total","Contas","Secretarias"],
                 "Valor":[sal_f["SALDO BANCARIO"].sum(), len(sal_f), sal_f["SECRETARIA"].nunique()]
@@ -376,8 +317,6 @@ with tab_sald:
         st.download_button("⬇️ Excel (dados + Resumo)", data=bsal,
                            file_name="saldos_filtrados.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-        # PDF (quebrado por Secretaria)
         pdf_sal = gerar_pdf_tabelado(
             sal_f[["CONTA","NOME DA CONTA","SECRETARIA","BANCO","TIPO DE RECURSO","SALDO BANCARIO"]],
             "Saldos — Contas Filtradas", quebra_por="SECRETARIA"
