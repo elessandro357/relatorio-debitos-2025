@@ -1,6 +1,6 @@
 # app.py — Análise de Gastos por Fornecedor (Streamlit)
 # Requisitos: streamlit, pandas, plotly, fpdf
-# (opcional para PDF com gráficos: kaleido==0.2.1)
+# (opcional para incluir gráficos no PDF: kaleido==0.2.1)
 # Executar: streamlit run app.py
 
 import io
@@ -12,7 +12,7 @@ import plotly.express as px
 from fpdf import FPDF
 
 # ================================
-# Config + CSS (reduz métricas)
+# Config + CSS (métricas menores)
 # ================================
 st.set_page_config(layout="wide", page_title="Análise de Gastos por Fornecedor")
 st.markdown(
@@ -108,15 +108,13 @@ def saldo_por_secretaria(df_saldos):
 SMART_MAP = {
     "—": "-", "–": "-", "‒": "-", "―": "-",
     "“": '"', "”": '"', "‘": "'", "’": "'",
-    "•": "-", "\u00A0": " "  # nbsp
+    "•": "-", "\u00A0": " "
 }
 def to_pdf_text(s: str) -> str:
     s = "" if s is None else str(s)
     for k, v in SMART_MAP.items():
         s = s.replace(k, v)
-    # remove zero-width e controles bidi
-    s = re.sub(r'[\u200b-\u200f\u202a-\u202e]', '', s)
-    # força Latin-1
+    s = re.sub(r'[\u200b-\u200f\u202a-\u202e]', '', s)  # zero-width/biDi
     try:
         s.encode("latin-1")
     except UnicodeEncodeError:
@@ -141,12 +139,10 @@ def gerar_pdf_listagem(df: pd.DataFrame, titulo="Relatorio"):
         pdf.multi_cell(0, 7, to_pdf_text("Nenhum registro."))
         return _pdf_to_bytesio(pdf)
 
-    pdf.set_font("Helvetica", size=10)
     cols = list(df.columns)
-    cols = [to_pdf_text(c) for c in cols]
     epw = pdf.w - 2 * pdf.l_margin
 
-    if set(["DATA","FORNECEDOR","CNPJ","VALOR","SECRETARIA"]).issubset(set([c.upper() for c in df.columns])):
+    if set(["DATA","FORNECEDOR","CNPJ","VALOR","SECRETARIA"]).issubset(set(df.columns)):
         order = ["DATA","FORNECEDOR","CNPJ","VALOR","SECRETARIA"]
         cols = [c for c in order if c in df.columns]
         w_data, w_forn, w_cnpj, w_val = 22, 70, 35, 28
@@ -171,7 +167,7 @@ def gerar_pdf_listagem(df: pd.DataFrame, titulo="Relatorio"):
 
     return _pdf_to_bytesio(pdf)
 
-# PDF do dashboard (métricas + gráficos)
+# ---- Captura PNG do Plotly (para PDF do dashboard) ----
 def _fig_png_bytes(fig):
     try:
         return fig.to_image(format="png", scale=2)  # requer kaleido
@@ -179,6 +175,7 @@ def _fig_png_bytes(fig):
         return None
 
 def gerar_pdf_dashboard(titulo, metrics: dict, figs: list):
+    """Gera um PDF (título+métricas+gráficos). 'figs' = [(subtitulo, fig), ...]."""
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=10)
     pdf.add_page()
@@ -186,7 +183,6 @@ def gerar_pdf_dashboard(titulo, metrics: dict, figs: list):
     pdf.cell(0, 10, to_pdf_text(titulo), ln=True, align="C")
     pdf.ln(2)
 
-    # Métricas
     pdf.set_font("Helvetica", size=10)
     for k, v in metrics.items():
         pdf.cell(0, 6, to_pdf_text(f"{k}: {v}"), ln=True)
@@ -195,19 +191,20 @@ def gerar_pdf_dashboard(titulo, metrics: dict, figs: list):
     for subtitulo, fig in figs:
         if fig is None:
             continue
-        img = _fig_png_bytes(fig)
-        if img is None:
-            # se não houver kaleido, ao menos escreve o título
+        img_bytes = _fig_png_bytes(fig)
+        if not img_bytes:
             pdf.ln(4)
             pdf.set_font("Helvetica", 'B', 11)
             pdf.cell(0, 7, to_pdf_text(subtitulo + " (gráfico indisponível sem 'kaleido')"), ln=True)
             pdf.set_font("Helvetica", size=10)
             continue
-        img.seek(0)
+        # Converte bytes -> stream e informa o tipo
+        stream = io.BytesIO(img_bytes)
+        stream.seek(0)
         pdf.ln(4)
         pdf.set_font("Helvetica", 'B', 11)
         pdf.cell(0, 7, to_pdf_text(subtitulo), ln=True)
-        pdf.image(img, w=epw)  # fpdf2 aceita stream
+        pdf.image(stream, w=epw, type="PNG")
     return _pdf_to_bytesio(pdf)
 
 def limpar_filtros(keys):
@@ -224,13 +221,12 @@ def limpar_filtros(keys):
 # ================================
 tab_dash, tab_saldos = st.tabs(["📈 Dashboard de Gastos (Débitos)", "🏦 Dashboard de Saldos"])
 
-# --------- Aba Débitos ---------
+# --------- Aba Débitos (sem série temporal e sem heatmap) ---------
 with tab_dash:
     up_deb = st.file_uploader(
         "📁 Envie a planilha de **Débitos** (DATA, FORNECEDOR, CNPJ, VALOR, SECRETARIA) — .xlsx ou .csv",
         type=["xlsx","csv"], key="deb_dashboard"
     )
-
     if not up_deb:
         st.info("Envie a planilha de Débitos para ver o dashboard.")
         st.stop()
@@ -240,10 +236,9 @@ with tab_dash:
     if not ok:
         st.error(f"Faltam colunas em Débitos: {', '.join(miss)}")
         st.stop()
-
     df = cast_types_debitos(df_raw)
 
-    # Sidebar
+    # Sidebar de filtros
     st.sidebar.header("🔎 Filtros — Gastos (Débitos)")
     dmin = pd.to_datetime(df["DATA"].min()).date()
     dmax = pd.to_datetime(df["DATA"].max()).date()
@@ -251,7 +246,6 @@ with tab_dash:
     dfi = st.sidebar.date_input("Data final", dmax, key="deb_d2")
     if din > dfi:
         st.sidebar.error("Data inicial > Data final."); st.stop()
-
     secs = st.sidebar.multiselect("Secretaria", sorted(df["SECRETARIA"].unique()), key="deb_secs")
     forn = st.sidebar.multiselect("Fornecedor", sorted(df["FORNECEDOR"].unique()), key="deb_forn")
     cnpjs = st.sidebar.multiselect("CNPJ", sorted(df["CNPJ"].astype(str).unique()), key="deb_cnpjs")
@@ -272,7 +266,7 @@ with tab_dash:
     if forn_q: df_f = df_f[df_f["FORNECEDOR"].str.contains(forn_q, case=False, na=False)]
     if vsel:   df_f = df_f[(df_f["VALOR"]>=vsel[0]) & (df_f["VALOR"]<=vsel[1])]
 
-    # KPIs menores
+    # KPIs
     k1,k2,k3,k4 = st.columns(4)
     k1.metric("Valor total filtrado", format_brl(df_f["VALOR"].sum() if not df_f.empty else 0))
     k2.metric("Registros", f"{len(df_f)}")
@@ -281,7 +275,7 @@ with tab_dash:
 
     st.divider()
 
-    # Gráficos (com fonte reduzida)
+    # Gráficos mantidos
     g1c,g2c = st.columns(2)
     with g1c:
         st.subheader("Débitos por Secretaria")
@@ -295,7 +289,6 @@ with tab_dash:
             fig1.update_traces(hovertemplate="<b>%{y}</b><br>Valor: %{x:,.2f}")
             fig1.update_layout(showlegend=False, margin=dict(l=10,r=10,t=30,b=10), font=dict(size=PLOTLY_FONT_SIZE))
             st.plotly_chart(fig1, use_container_width=True)
-
     with g2c:
         st.subheader(f"Top {int(topn)} Fornecedores (por valor)")
         if df_f.empty:
@@ -310,37 +303,6 @@ with tab_dash:
             fig2.update_traces(hovertemplate="<b>%{x}</b><br>Valor: %{y:,.2f}")
             fig2.update_layout(showlegend=False, xaxis_tickangle=45, margin=dict(l=10,r=10,t=30,b=80), font=dict(size=PLOTLY_FONT_SIZE))
             st.plotly_chart(fig2, use_container_width=True)
-
-    st.divider()
-    st.subheader("Série Temporal — Gastos por Mês")
-    if df_f.empty:
-        st.info("Sem dados.")
-        fig3 = None
-    else:
-        g3 = df_f.groupby("YM", as_index=False)["VALOR"].sum().sort_values("YM")
-        fig3 = px.line(g3, x="YM", y="VALOR", markers=True)
-        fig3.update_traces(hovertemplate="<b>%{x}</b><br>Valor: %{y:,.2f}")
-        fig3.update_layout(xaxis_title="Ano-Mês", yaxis_title="Valor", margin=dict(l=10,r=10,t=30,b=10), font=dict(size=PLOTLY_FONT_SIZE))
-        st.plotly_chart(fig3, use_container_width=True)
-
-    st.subheader("Mapa de Calor — Secretaria × Mês")
-    if df_f.empty:
-        st.info("Sem dados.")
-        fig4 = None
-    else:
-        piv = (df_f.groupby(["SECRETARIA","YM"])["VALOR"].sum()
-                     .unstack(fill_value=0).sort_index())
-        if piv.shape[0] == 0 or piv.shape[1] == 0:
-            st.info("Sem dados.")
-            fig4 = None
-        else:
-            fig4 = px.imshow(
-                piv.values,
-                labels=dict(x="Ano-Mês", y="Secretaria", color="Valor"),
-                x=list(piv.columns), y=list(piv.index), aspect="auto"
-            )
-            fig4.update_layout(font=dict(size=PLOTLY_FONT_SIZE))
-            st.plotly_chart(fig4, use_container_width=True)
 
     st.divider()
     st.subheader("📋 Dados Filtrados")
@@ -360,7 +322,7 @@ with tab_dash:
     pdf = gerar_pdf_listagem(pdf_df, "Debitos - Dados Filtrados")
     st.download_button("📄 PDF (dados filtrados - tabela)", data=pdf,
                        file_name="debitos_filtrados.pdf", mime="application/pdf")
-    # PDF do painel (métricas + gráficos) — substitui PNG/HTML
+    # PDF do painel (só gráficos mantidos)
     deb_metrics = {
         "Valor total filtrado": format_brl(df_f["VALOR"].sum() if not df_f.empty else 0),
         "Registros": str(len(df_f)),
@@ -373,13 +335,10 @@ with tab_dash:
         [
             ("Débitos por Secretaria", fig1),
             (f"Top {int(topn)} Fornecedores", fig2),
-            ("Série Temporal — Gastos por Mês", fig3),
-            ("Mapa de Calor — Secretaria × Mês", fig4),
         ]
     )
     st.download_button("📄 Baixar PDF do Dashboard (imprimir)", data=pdf_dash,
                        file_name="dashboard_debitos.pdf", mime="application/pdf")
-    # Botão de imprimir página (navegador)
     components.html(
         """
         <button onclick="window.print()" style="padding:8px 12px;margin-top:8px">
@@ -450,7 +409,6 @@ with tab_saldos:
         pdf2 = gerar_pdf_listagem(pdf_sal, "Saldos - Contas Filtradas")
         st.download_button("📄 PDF (saldos filtrados - tabela)", data=pdf2,
                            file_name="saldos_filtrados.pdf", mime="application/pdf")
-        # PDF do painel de saldos
         sal_metrics = {
             "Saldo total": format_brl(sal_f["SALDO BANCARIO"].sum()),
             "Contas": str(len(sal_f)),
